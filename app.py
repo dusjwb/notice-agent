@@ -79,12 +79,14 @@ def generate(client, contents, config, log=None):
     import re
     import time
 
-    last, waited = None, 0
+    last, waited, daily = None, 0, set()
     for attempt in range(2):
         # 지난번에 성공한 모델을 먼저 시도
         models = sorted(model_list(client), key=lambda m: m != st.session_state.get("model"))
         wait = 0
         for m in models:
+            if m in daily:          # 오늘 사용량을 다 쓴 모델은 건너뛰기
+                continue
             try:
                 resp = client.models.generate_content(model=m, contents=contents, config=config)
                 st.session_state["model"] = m
@@ -93,6 +95,9 @@ def generate(client, contents, config, log=None):
                 last = e
                 msg = str(e)
                 if "429" in msg or "RESOURCE_EXHAUSTED" in msg:  # 사용량 초과 → 다른 모델 시도
+                    if "PerDay" in msg or "per day" in msg.lower():   # 하루 한도: 기다려도 소용없음
+                        daily.add(m)
+                        continue
                     found = re.search(r"retry in ([\d.]+)s", msg) or re.search(r"retryDelay': '(\d+)s", msg)
                     wait = max(wait, float(found.group(1)) if found else 30)
                 if "thinking" in msg.lower() and ("400" in msg or "INVALID" in msg):
@@ -107,6 +112,8 @@ def generate(client, contents, config, log=None):
             log(f"⏳ 무료 사용량 한도에 걸려서 {int(wait)}초만 기다렸다가 이어서 할게요...")
         time.sleep(wait)
         waited += wait
+    if daily and all(m in daily for m in model_list(client)):
+        raise RuntimeError("오늘 무료 사용량을 모두 썼어요. 오후 5시쯤 초기화돼요.")
     if last and ("429" in str(last) or "RESOURCE_EXHAUSTED" in str(last)):
         raise RuntimeError("AI 무료 사용량 한도에 걸렸어요. 30초~1분 뒤에 다시 눌러 주세요. "
                            "(그동안 이미 판단한 결과는 그대로 볼 수 있어요)")
