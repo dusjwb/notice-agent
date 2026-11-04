@@ -621,12 +621,10 @@ def ai_judge_titles(api_key, profile, posts, today, log=None, progress=None):
         except RuntimeError:
             if not results:
                 raise
-    # 마감이 이미 지난 공지는 추천에서 빼요 (화면 숫자와 맞게)
-    for r in results:
-        dl = str(r.get("deadline") or "")
-        if r.get("relevant") and len(dl) == 10 and dl < today.isoformat():
-            r["relevant"] = False
-            r["reason"] = (r.get("reason") or "") + " (마감 지남)"
+    # 마감이 이미 지난 공지는 아예 없애요 (숨김 창에도 안 나와요)
+    past = {r["id"] for r in results if len(str(r.get("deadline") or "")) == 10 and str(r["deadline"]) < today.isoformat()}
+    results = [r for r in results if r["id"] not in past]
+    posts = [p for p in posts if p["id"] not in past]
     # 그래도 답이 없는 공지는 숨김 창에서 볼 수 있게 남겨요
     done = {r["id"] for r in results}
     for p in posts:
@@ -1217,12 +1215,12 @@ def parse_board_lines(text):
 # ──────────────────────────────────────────────
 # 화면
 # ──────────────────────────────────────────────
-st.set_page_config(page_title="공지 비서 Agent", page_icon="📢", layout="wide")
+st.set_page_config(page_title="공지콕", page_icon="📢", layout="wide")
 st.markdown("""<style>
   /* 위쪽 Streamlit 메뉴 줄(Deploy)에 제목이 가려지지 않게 충분히 띄우기 */
   .block-container, [data-testid="stMainBlockContainer"] { padding-top: 5.5rem !important; max-width: 1400px; }
   header[data-testid="stHeader"] { background: #F4F5F8; }
-  .app-title { font-size: 2.3rem; font-weight: 800; color: #15213B; margin: 0; line-height: 1.25; }
+  .app-title { font-size: 2.3rem; font-weight: 900; color: #15213B; margin: 0; line-height: 1.25; }
   .app-sub { color: #6B7280; font-size: 1.05rem; margin: .2rem 0 0; }
 </style>""", unsafe_allow_html=True)
 
@@ -1250,12 +1248,10 @@ with st.sidebar:
     st.divider()
     st.header("🌐 게시판")
     st.session_state.setdefault("board_text", "")
-    st.toggle("국민대·전자공학부 실제 게시판 사용", key="use_kmu", on_change=toggle_kmu,
-              help="끄면 notices.txt 예시 공지를 사용해요 (인터넷 없이 시연 가능)")
+    st.toggle("국민대 전자공학부 실제 게시판", key="use_kmu", on_change=toggle_kmu)
     board_lines = st.text_area(
-        "게시판 링크 (한 줄에 하나씩, 링크만 붙여넣어도 돼요)", key="board_text",
-        placeholder="https://ee.kookmin.ac.kr/community/board/notice/\nhttps://...", height=130,
-        help="이름을 직접 붙이고 싶으면 '이름 | 주소' 또는 '이름 주소'처럼 써도 돼요.")
+        "게시판 링크", key="board_text",
+        placeholder="https://ee.kookmin.ac.kr/community/board/notice/\nhttps://...", height=130)
     boards = parse_board_lines(board_lines)
     if boards:
         st.caption("인식한 게시판\n" + "\n".join(f"- ✅ **{n}**" for n in boards))
@@ -1331,7 +1327,7 @@ SHOW_AGENT_PAGE = False
 PAGES = (["Agent에게 맡기기"] if SHOW_AGENT_PAGE else []) + ["홈", "캘린더", "기억", "숨김"]
 h_left, h_right = st.columns([3, 2], vertical_alignment="center")
 with h_left:
-    st.markdown(f'<p class="app-title">학교 공지 맞춤 비서 Agent</p>'
+    st.markdown(f'<p class="app-title"><b>공지콕</b></p>'
                 f'<p class="app-sub">{major or "학과 미입력"} {grade} · 기준일 {today.month}/{today.day}</p>',
                 unsafe_allow_html=True)
 with h_right:
@@ -1350,7 +1346,7 @@ MY_KEY = batch_key(profile, boards if real_boards else {}, st.session_state["not
 # ── 홈 ────────────────────────────────
 if page == "홈":
     if real_boards:
-        source_note = f"게시판 {len(boards)}곳의 최신 공지를 Gemini가 판단해요."
+        source_note = ""
         notices = None
     else:
         with st.expander("공지 내용 보기 / 직접 붙여넣기 (단톡방 공지도 여기에)"):
@@ -1362,7 +1358,7 @@ if page == "홈":
     batch = load_batch(MY_KEY)
     run = c1.button("🔄 다시 판단하기" if batch else "🤖 AI로 공지 판단하기", type="primary", use_container_width=True,
                     help="같은 프로필·게시판으로 이미 판단한 결과가 있으면 바로 보여줘요. 새 공지를 반영하려면 다시 판단하세요.")
-    c2.caption(source_note + (f"  ·  마지막 판단: {batch['saved_at']}" if batch else "  ·  아직 판단한 결과가 없어요."))
+    c2.caption("  ·  ".join(x for x in (source_note, f"마지막 판단: {batch['saved_at']}" if batch else "아직 판단한 결과가 없어요.") if x))
 
     if run and ready():
         import time as _time

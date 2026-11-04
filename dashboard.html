@@ -292,7 +292,7 @@ function addKw(listName, w) {
   list.push(w);
   return true;
 }
-function countWord(w) { return DATA.results.filter(r => hayOf(r).includes(w)).length; }
+function countWord(w) { return liveResults().filter(r => hayOf(r).includes(w)).length; }
 
 // 공지 제목에서 자주 나오는 단어 (눌러서 제외)
 const STOP = new Set(["모집", "안내", "신청", "대상", "관련", "및", "위한", "대비", "참가", "참여자", "참가자", "공고",
@@ -325,13 +325,16 @@ function sortKey(a, b) {
   const da = ddayOf(a), db = ddayOf(b);
   return (da ?? 999) - (db ?? 999) || (b.score || 0) - (a.score || 0);
 }
+function liveResults() { return DATA.results.filter(r => { const d = ddayOf(r); return d === null || d >= 0; }); }
 function lists() {
-  const shown = DATA.results.filter(r => !hiddenReason(r)).sort(sortKey);
+  // 마감이 지난 공지는 홈·숨김 어디에도 보이지 않게 아예 빼요
+  const live = liveResults();
+  const shown = live.filter(r => !hiddenReason(r)).sort(sortKey);
   return {
     shown,
     starred: shown.filter(r => S.starred.includes(r.id)),
     rest: shown.filter(r => !S.starred.includes(r.id)),
-    hidden: DATA.results.filter(r => hiddenReason(r)).sort(sortKey),
+    hidden: live.filter(r => hiddenReason(r)).sort(sortKey),
   };
 }
 
@@ -339,7 +342,7 @@ function lists() {
 function standaloneHeader() {
   const pages = [["list", "홈"], ["calendar", "캘린더"], ["memory", "기억"], ["hidden", "숨김"]];
   return `<header class="sa-head">
-    <div><h1>📢 학교 공지 맞춤 비서 Agent</h1>
+    <div><h1><b>공지콕</b></h1>
       <p>${esc(DATA.label || "")} · 기준일 ${today.getMonth() + 1}/${today.getDate()}</p></div>
     <div class="sa-right">
       ${PROFILES.length > 1 ? `<label class="sa-prof">프로필 <select id="profsel">${PROFILES.map((p, i) =>
@@ -401,7 +404,7 @@ function listView() {
       ${L.starred.length ? `<div class="sec">★ 중요 표시한 공지 <small>체크한 공지는 항상 맨 위에</small></div>
         ${L.starred.map(card).join("")}` : ""}
 
-      <div class="sec">추천 공지 <b class="cnt">${nRec}개</b> <small>마감 급한 순 · ☆를 누르면 위로 올라가요</small></div>
+      <div class="sec">추천 공지 <b class="cnt">${nRec}개</b> <small>마감 급한 순</small></div>
       ${showRest.map(card).join("") || (extra.length ? "" : `<p class="note">보여줄 공지가 없어요. 오른쪽에서 태그를 켜거나 아래 숨긴 공지에서 다시 볼 수 있어요.</p>`)}
       ${extra.length ? `<button class="more" data-act="expand">${S.expanded ? "접기 ▲" : `펼치기 ▼ <small>(상시 공지 ${extra.length}개)</small>`}</button>` : ""}
 
@@ -411,8 +414,8 @@ function listView() {
     <div class="side">
       <div class="panel">
         <h3>관심 키워드</h3>
-        <div class="tags">${TAGS.filter(t => DATA.results.some(r => tagOf(r) === t)).map(t => {
-          const n = DATA.results.filter(r => tagOf(r) === t).length;
+        <div class="tags">${TAGS.filter(t => liveResults().some(r => tagOf(r) === t)).map(t => {
+          const n = liveResults().filter(r => tagOf(r) === t).length;
           const on = S.tagsOn.includes(t);
           return `<button class="tg ${on ? "on" : ""}" data-act="tag" data-v="${t}">${on ? "✓ " : ""}${t}<span class="n">${n}</span></button>`;
         }).join("")}</div>
@@ -815,7 +818,7 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") hidePop(); }
 window.addEventListener("scroll", hidePop, true);
 
 S = loadState();
-if (STANDALONE) { document.body.classList.add("standalone"); document.title = "학교 공지 맞춤 비서 Agent"; }
+if (STANDALONE) { document.body.classList.add("standalone"); document.title = "공지콕"; }
 render();
 document.addEventListener("change", e => { if (e.target.id === "profsel") switchProfile(Number(e.target.value)); });
 window.addEventListener("storage", e => {
