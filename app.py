@@ -19,7 +19,7 @@ from agent_tools import (TOOL_DECLARATIONS, Toolbox, collect_notices, d_day, d_d
                          remember_note, save_memory)
 
 # 내 키로 쓸 수 있는 모델을 Google에 물어봐서 자동으로 골라요. 목록을 못 받을 때만 아래 이름을 써요.
-MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview"]
+MODELS = ["gemini-3.8-flash-lite", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview"]
 MAX_STEPS = 15          # Agent가 도구를 쓰는 최대 횟수 (무한 반복 방지)
 CACHE_FILE = "last_result.json"
 
@@ -65,8 +65,9 @@ def model_list(client):
                 names.append(n)
     except Exception:
         names = []
-    # 정식 버전 먼저 → 최신순 → lite는 뒤로 (시험판 preview·exp는 맨 뒤)
-    names = sorted(set(names), key=lambda n: ("preview" in n or "exp" in n, -_ver(n), "lite" in n, len(n)))
+    # 무료 한도가 넉넉한 lite를 먼저 → 그다음 일반 모델 (각각 최신순, 시험판 preview·exp는 맨 뒤)
+    # 한 모델이 한도에 걸리면 다음 모델로 넘어가요. 한도는 모델마다 따로라 더 많이 쓸 수 있어요.
+    names = sorted(set(names), key=lambda n: ("preview" in n or "exp" in n, "lite" not in n, -_ver(n), len(n)))
     out = names + [m for m in MODELS if m not in names]
     st.session_state["model_list"] = out
     return out
