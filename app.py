@@ -73,13 +73,14 @@ def model_list(client):
     return out
 
 
-def generate(client, contents, config, log=None):
+def generate(client, contents, config, log=None, budget=None):
     """모델을 순서대로 시도합니다.
     무료 사용량(1분당 요청 수)을 넘기면 바로 다른 모델로 바꾸고, 모두 막혔을 때만 잠깐(최대 15초) 기다려요."""
     import re
     import time
 
-    last, waited, daily = None, 0, set()
+    t_start = time.time()
+    last, waited, daily, out_of_time = None, 0, set(), False
     for attempt in range(2):
         # 지난번에 성공한 모델을 먼저 시도
         models = sorted(model_list(client), key=lambda m: m != st.session_state.get("model"))
@@ -87,6 +88,9 @@ def generate(client, contents, config, log=None):
         for m in models:
             if m in daily:          # 오늘 사용량을 다 쓴 모델은 건너뛰기
                 continue
+            if budget and last is not None and time.time() - t_start > budget:
+                out_of_time = True   # 시간 제한: 몇 분씩 돌지 않게 여기서 멈춰요
+                break
             try:
                 resp = client.models.generate_content(model=m, contents=contents, config=config)
                 st.session_state["model"] = m
@@ -105,7 +109,7 @@ def generate(client, contents, config, log=None):
                 # 그 밖의 오류(모델 이름 없음·예전 모델 막힘 등)도 다음 모델로
                 if "NOT_FOUND" in msg or "no longer available" in msg:
                     st.session_state["model_list"] = [x for x in model_list(client) if x != m]
-        if not wait or waited >= MAX_WAIT:
+        if out_of_time or not wait or waited >= MAX_WAIT:
             break
         wait = min(wait + 1, MAX_WAIT - waited)
         if log:
@@ -264,7 +268,7 @@ def batch_prompt(profile, notices, today):
 
 
 
-def ai_call(api_key, prompt, read_links=False, json_mode=False, log=None, fast=False):
+def ai_call(api_key, prompt, read_links=False, json_mode=False, log=None, fast=False, budget=None):
     """Gemini 부르기. 빠르게: '생각하는 시간'을 끄고(thinking_budget=0) 바로 답하게 해요.
     read_links=True면 Gemini가 글 속의 링크(URL)를 직접 열어서 읽어요 (URL context 기능)."""
     from google.genai import types
@@ -281,16 +285,16 @@ def ai_call(api_key, prompt, read_links=False, json_mode=False, log=None, fast=F
         st.session_state["model"] = next((m for m in ml if "lite" in m), ml[0] if ml else None)
     try:
         if st.session_state.get("no_think"):
-            return generate(client, prompt, types.GenerateContentConfig(**base), log)
+            return generate(client, prompt, types.GenerateContentConfig(**base), log, budget)
         try:
             cfg = types.GenerateContentConfig(**base, thinking_config=types.ThinkingConfig(thinking_budget=0))
-            return generate(client, prompt, cfg, log)
+            return generate(client, prompt, cfg, log, budget)
         except Exception as e:
             if "THINKING_UNSUPPORTED" not in str(e):
                 raise
             # 이 모델은 '생각 끄기'를 지원하지 않아요 → 이번 접속 동안은 기본 설정으로
             st.session_state["no_think"] = True
-            return generate(client, prompt, types.GenerateContentConfig(**base), log)
+            return generate(client, prompt, types.GenerateContentConfig(**base), log, budget)
     finally:
         if fast:   # 판단 같은 중요한 일은 원래 모델로
             st.session_state["model"] = prev
@@ -352,7 +356,7 @@ def ai_find_posts(api_key, boards, today=None, log=None):
 - 절대 지어내지 마. 페이지를 못 읽은 게시판은 빼.
 ## 출력: JSON 배열만
 [{{"board": "게시판 이름", "title": "글 제목", "date": "게시일(있으면)", "url": "https://..."}}]"""
-    resp = ai_call(api_key, prompt, read_links=True, log=log, fast=True)
+    resp = ai_call(api_key, prompt, read_links=True, log=log, fast=True, budget=40)
     posts, seen, count = [], set(), {}
     for p in parse_json_list(resp.text):
         if not isinstance(p, dict) or not p.get("title"):
@@ -366,8 +370,62 @@ def ai_find_posts(api_key, boards, today=None, log=None):
         seen.add(url)
         count[board] = count.get(board, 0) + 1
         posts.append({"id": str(len(posts) + 1), "board": board, "title": str(p["title"]).strip(),
-                      "date": p.get("date", ""), "url": url})
+                      "date": p.get("date", "") or "", "url": url})
     return posts[:MAX_LINKS], failed_links(resp)
+
+
+def _read_one_board(name, url, limit):
+    """게시판 목록 페이지 하나를 바로 읽어서 공지 제목·주소·게시일을 꺼내요 (AI 없이, 1~3초)"""
+    import re
+    import requests
+    from bs4 import BeautifulSoup
+    from urllib.parse import urljoin, urlparse
+
+    resp = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0 (student project)"})
+    resp.encoding = resp.apparent_encoding
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for tag in soup(["script", "style", "nav", "footer", "header"]):
+        tag.decompose()
+    base = urlparse(url).path.rsplit("/index.do", 1)[0].rstrip("/")
+    date_re = re.compile(r"(20\d{2})[.\-/]\s?(\d{1,2})[.\-/]\s?(\d{1,2})")
+    found, seen = [], set()
+    for a in soup.find_all("a", href=True):
+        title = " ".join(a.get_text().split())
+        href = urljoin(url, a["href"])
+        path = urlparse(href).path
+        if len(title) < 6 or not href.startswith("http") or href in seen:
+            continue
+        if not (path.startswith(base + "/") and re.search(r"/\d{2,}(/|$)", path[len(base):])):
+            continue
+        seen.add(href)
+        row = a.find_parent(["tr", "li"]) or a.parent
+        m = date_re.search(" ".join(row.get_text(" ").split())) if row else None
+        posted = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}" if m else ""
+        found.append({"board": name, "title": title[:120], "date": posted, "url": href})
+    # 최근 글이 먼저 오게 (게시일이 있으면 날짜순)
+    found.sort(key=lambda p: p["date"] or "", reverse=True)
+    return found[:limit]
+
+
+def quick_find_posts(boards, per_board=6):
+    """1단계(빠른 길): 모든 게시판을 동시에 열어 목록을 읽어요. 못 읽은 게시판은 따로 돌려줘요."""
+    from concurrent.futures import ThreadPoolExecutor
+    items = list(boards.items())[:MAX_LINKS]
+    posts, failed = [], {}
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futs = [(n, u, ex.submit(_read_one_board, n, u, per_board)) for n, u in items]
+        for n, u, f in futs:
+            try:
+                got = f.result(timeout=15)
+            except Exception:
+                got = []
+            if got:
+                posts.extend(got)
+            else:
+                failed[n] = u
+    for i, p in enumerate(posts):
+        p["id"] = str(i + 1)
+    return posts, failed
 
 
 def ai_judge_posts(api_key, profile, posts, today, log=None):
@@ -404,8 +462,9 @@ def ai_judge_titles(api_key, profile, posts, today, log=None):
     notices = [{"id": p["id"], "text": f"제목: {p['title']}\n게시판: {p['board']}\n게시일: {p.get('date', '')}\n주소: {p['url']}"}
                for p in posts]
     resp = ai_call(api_key, batch_prompt(profile, notices, today)
-                   + "\n본문 없이 제목만 보고 판단하는 거니, reason 끝에 '(본문 확인 필요)'라고 붙여.\n",
-                   json_mode=True, log=log)
+                   + "\n게시판 목록(제목·게시일)만 보고 판단하는 거야. 제목에 마감일·기간이 보이면 deadline에 넣고, "
+                     "게시일이 오래됐거나 마감이 오늘보다 앞이면 relevant=false. 본문을 안 봤으니 checklist는 비워도 돼.\n",
+                   json_mode=True, log=log, budget=40)
     return match_results(parse_json_list(resp.text), posts)
 
 
@@ -1022,7 +1081,7 @@ MY_KEY = batch_key(profile, boards if real_boards else {}, st.session_state["not
 # ── 홈 ────────────────────────────────
 if page == "홈":
     if real_boards:
-        source_note = f"Gemini가 게시판 {len(boards)}곳의 링크를 직접 읽고 판단해요."
+        source_note = f"게시판 {len(boards)}곳의 최신 공지를 Gemini가 판단해요."
         notices = None
     else:
         with st.expander("공지 내용 보기 / 직접 붙여넣기 (단톡방 공지도 여기에)"):
@@ -1036,36 +1095,55 @@ if page == "홈":
                     help="같은 프로필·게시판으로 이미 판단한 결과가 있으면 바로 보여줘요. 새 공지를 반영하려면 다시 판단하세요.")
     c2.caption(source_note + (f"  ·  마지막 판단: {batch['saved_at']}" if batch else "  ·  아직 판단한 결과가 없어요."))
 
+    deep_read = False
+    if real_boards:
+        deep_read = c2.checkbox("공지 본문까지 읽기 (느림)", value=False,
+                                help="끄면 게시판 목록(제목·게시일)으로 빠르게 판단해요. 켜면 Gemini가 글을 하나하나 열어 읽어서 1분 넘게 걸릴 수 있어요.")
     if run and ready():
         import time as _time
         t0 = _time.time()
         with st.status("AI가 일하는 중...", expanded=True) as status:
             try:
                 if notices is None:
-                    # 실제 게시판: 우리 코드는 학교 사이트에 접속하지 않고, Gemini가 링크를 직접 읽어요
+                    # 실제 게시판: 게시판 목록은 동시에 바로 읽고(몇 초), 판단은 Gemini가 해요
                     if len(boards) > MAX_LINKS:
                         st.write(f"⚠️ 게시판이 많아서 앞의 {MAX_LINKS}곳만 읽어요.")
                     n_b = min(len(boards), MAX_LINKS)
-                    st.write(f"⏱️ 예상 시간 약 {20 + 3 * n_b}~{35 + 4 * n_b}초")
-                    st.write(f"1/3 🔍 Gemini가 게시판 {n_b}곳을 직접 열어 아직 신청할 수 있는 공지를 찾는 중...")
-                    posts, bad = ai_find_posts(api_key, boards, today, log=st.caption)
-                    if bad:
-                        st.write("⚠️ Gemini가 열지 못한 게시판: " + ", ".join(bad))
+                    st.write(f"⏱️ 예상 시간 약 {'40~90' if deep_read else '10~30'}초")
+                    st.write(f"1/3 🔍 게시판 {n_b}곳을 동시에 열어 최신 공지를 찾는 중...")
+                    posts, missed = quick_find_posts(dict(list(boards.items())[:MAX_LINKS]))
+                    if missed:   # 바로 못 읽은 게시판만 Gemini가 직접 열어 읽어요
+                        st.write(f"↻ 바로 못 읽은 게시판 {len(missed)}곳은 Gemini가 직접 열어 읽는 중...")
+                        try:
+                            extra, bad = ai_find_posts(api_key, missed, today, log=st.caption)
+                        except RuntimeError as e:
+                            if not posts:
+                                raise
+                            extra, bad = [], list(missed)
+                        if bad:
+                            st.write("⚠️ 열지 못한 게시판: " + ", ".join(bad))
+                        posts += extra
+                        for i, p in enumerate(posts):
+                            p["id"] = str(i + 1)
+                    posts = posts[:24]
                     if not posts:
-                        raise RuntimeError("Gemini가 게시판에서 공지를 찾지 못했어요. 게시판 링크가 맞는지 확인하거나, "
+                        raise RuntimeError("게시판에서 공지를 찾지 못했어요. 게시판 링크가 맞는지 확인하거나, "
                                            "사이드바 스위치를 꺼서 예시 공지로 시연해 주세요.")
                     st.write(f"2/3 📄 최신 공지 {len(posts)}개를 찾았어요 ({_time.time() - t0:.0f}초)")
-                    st.write(f"3/3 🤖 Gemini가 공지 {len(posts)}개를 직접 읽고 판단하는 중...")
-                    try:
-                        results, bad = ai_judge_posts(api_key, profile, posts, today, log=st.caption)
-                    except RuntimeError as e:
-                        if "한도" in str(e):
-                            raise
-                        results, bad = [], []
-                    if bad:
-                        st.write(f"⚠️ 본문을 열지 못한 공지 {len(bad)}개는 제목만 보고 판단했어요.")
-                    if len(results) < len(posts) // 2:   # 답을 제대로 못 받았으면 제목만으로 빠르게 다시
-                        st.write("↻ 본문 읽기가 잘 안 돼서, 제목과 게시판 정보로 빠르게 다시 판단할게요...")
+                    results = []
+                    if deep_read:
+                        st.write(f"3/3 🤖 Gemini가 공지 {len(posts)}개의 본문을 직접 읽고 판단하는 중...")
+                        try:
+                            results, bad = ai_judge_posts(api_key, profile, posts, today, log=st.caption)
+                            if bad:
+                                st.write(f"⚠️ 본문을 열지 못한 공지 {len(bad)}개는 제목만 보고 판단했어요.")
+                        except RuntimeError as e:
+                            if "오늘 무료" in str(e):
+                                raise
+                            st.write("↻ 본문 읽기가 오래 걸려서, 제목과 게시일로 빠르게 판단할게요...")
+                    else:
+                        st.write(f"3/3 🤖 Gemini가 공지 {len(posts)}개를 판단하는 중...")
+                    if len(results) < len(posts) // 2:
                         results = ai_judge_titles(api_key, profile, posts, today, log=st.caption)
                 else:
                     st.write(f"⏱️ 예상 시간 약 5~15초 · 🤖 공지 {len(notices)}개를 한 번에 판단하는 중...")
