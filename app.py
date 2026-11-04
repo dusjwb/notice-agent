@@ -18,7 +18,8 @@ from agent_tools import (TOOL_DECLARATIONS, Toolbox, collect_notices, d_day, d_d
                          load_sample_notices, make_ics, parse_notices, remember_feedback,
                          remember_note, save_memory)
 
-MODELS = ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"]  # 위에서부터 시도
+# 내 키로 쓸 수 있는 모델을 Google에 물어봐서 자동으로 골라요. 목록을 못 받을 때만 아래 이름을 써요.
+MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview"]
 MAX_STEPS = 15          # Agent가 도구를 쓰는 최대 횟수 (무한 반복 방지)
 CACHE_FILE = "last_result.json"
 
@@ -43,6 +44,34 @@ def get_client(api_key):
 MAX_WAIT = 15   # 무료 한도에 걸렸을 때 최대로 기다리는 시간(초). 1분 안에 끝나도록 짧게
 
 
+def _ver(name):
+    import re
+    m = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
+    return float(m.group(1)) if m else 0.0
+
+
+def model_list(client):
+    """내 키로 지금 쓸 수 있는 Flash 모델을 최신순으로 (예전 모델이 막혀도 자동으로 새 모델 사용).
+    lite·preview는 뒤로. 한 번 알아내면 이 접속 동안 기억해요."""
+    if st.session_state.get("model_list"):
+        return st.session_state["model_list"]
+    names = []
+    try:
+        for m in client.models.list():
+            n = str(getattr(m, "name", "")).split("/")[-1]
+            acts = getattr(m, "supported_actions", None) or ["generateContent"]
+            bad = ("image", "tts", "audio", "live", "embed", "vision", "thinking-exp", "learnlm")
+            if n.startswith("gemini-") and "flash" in n and "generateContent" in acts and not any(b in n for b in bad):
+                names.append(n)
+    except Exception:
+        names = []
+    # 정식 버전 먼저 → 최신순 → lite는 뒤로 (시험판 preview·exp는 맨 뒤)
+    names = sorted(set(names), key=lambda n: ("preview" in n or "exp" in n, -_ver(n), "lite" in n, len(n)))
+    out = names + [m for m in MODELS if m not in names]
+    st.session_state["model_list"] = out
+    return out
+
+
 def generate(client, contents, config, log=None):
     """모델을 순서대로 시도합니다.
     무료 사용량(1분당 요청 수)을 넘기면 바로 다른 모델로 바꾸고, 모두 막혔을 때만 잠깐(최대 15초) 기다려요."""
@@ -52,7 +81,7 @@ def generate(client, contents, config, log=None):
     last, waited = None, 0
     for attempt in range(2):
         # 지난번에 성공한 모델을 먼저 시도
-        models = sorted(MODELS, key=lambda m: m != st.session_state.get("model"))
+        models = sorted(model_list(client), key=lambda m: m != st.session_state.get("model"))
         wait = 0
         for m in models:
             try:
@@ -65,7 +94,11 @@ def generate(client, contents, config, log=None):
                 if "429" in msg or "RESOURCE_EXHAUSTED" in msg:  # 사용량 초과 → 다른 모델 시도
                     found = re.search(r"retry in ([\d.]+)s", msg) or re.search(r"retryDelay': '(\d+)s", msg)
                     wait = max(wait, float(found.group(1)) if found else 30)
-                # 그 밖의 오류(모델 이름 없음 등)도 다음 모델로
+                if "thinking" in msg.lower() and ("400" in msg or "INVALID" in msg):
+                    raise RuntimeError("THINKING_UNSUPPORTED: " + msg)   # 모델을 바꾸지 말고 '생각 끄기' 없이 다시
+                # 그 밖의 오류(모델 이름 없음·예전 모델 막힘 등)도 다음 모델로
+                if "NOT_FOUND" in msg or "no longer available" in msg:
+                    st.session_state["model_list"] = [x for x in model_list(client) if x != m]
         if not wait or waited >= MAX_WAIT:
             break
         wait = min(wait + 1, MAX_WAIT - waited)
@@ -221,7 +254,6 @@ def batch_prompt(profile, notices, today):
 """
 
 
-FAST_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash"]   # 링크 읽기처럼 단순한 일은 빠른 모델부터
 
 
 def ai_call(api_key, prompt, read_links=False, json_mode=False, log=None, fast=False):
@@ -236,16 +268,20 @@ def ai_call(api_key, prompt, read_links=False, json_mode=False, log=None, fast=F
         base["response_mime_type"] = "application/json"
     client = get_client(api_key)
     prev = st.session_state.get("model")
-    if fast:   # 빠른 모델을 먼저 고르게 (안 되면 generate가 다른 모델로 넘어가요)
-        st.session_state["model"] = FAST_MODELS[0]
+    if fast:   # 빠른 모델(lite)을 먼저 고르게 (안 되면 generate가 다른 모델로 넘어가요)
+        ml = model_list(client)
+        st.session_state["model"] = next((m for m in ml if "lite" in m), ml[0] if ml else None)
     try:
+        if st.session_state.get("no_think"):
+            return generate(client, prompt, types.GenerateContentConfig(**base), log)
         try:
             cfg = types.GenerateContentConfig(**base, thinking_config=types.ThinkingConfig(thinking_budget=0))
             return generate(client, prompt, cfg, log)
         except Exception as e:
-            if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e) or "한도" in str(e):
+            if "THINKING_UNSUPPORTED" not in str(e):
                 raise
-            # 일부 모델은 '생각 끄기'를 지원하지 않아요 → 기본 설정으로 다시
+            # 이 모델은 '생각 끄기'를 지원하지 않아요 → 이번 접속 동안은 기본 설정으로
+            st.session_state["no_think"] = True
             return generate(client, prompt, types.GenerateContentConfig(**base), log)
     finally:
         if fast:   # 판단 같은 중요한 일은 원래 모델로
@@ -775,7 +811,7 @@ def recommend_boards(api_key, profile, current, candidates, top=5, at_least=3):
 [{{"no": 후보번호, "reason": ""}}]"""
             config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2)
             client, picks = get_client(api_key), None
-            for m in sorted(MODELS, key=lambda m: m != st.session_state.get("model")):  # 한도에 걸려도 기다리지 않고 다음으로
+            for m in sorted(model_list(client), key=lambda m: m != st.session_state.get("model")):  # 한도에 걸려도 기다리지 않고 다음으로
                 try:
                     picks = json.loads(client.models.generate_content(model=m, contents=prompt, config=config).text)
                     st.session_state["model"] = m
