@@ -76,6 +76,7 @@
   .stub span { font-size: 11.5px; opacity: .92; margin-top: 2px; }
   .more { display: block; margin: 4px auto 0; border: 0; background: none; color: var(--muted); font-size: 14.5px; }
   .more:hover { color: var(--ink); text-decoration: underline; }
+  .sec .cnt { font-size: inherit; font-weight: 800; color: var(--ink); margin-left: -4px; }
   @media (max-width: 640px) { .stub { flex-basis: 64px; } .stub b { font-size: 17px; } .bar { width: 70px; } }
 
   /* 숨긴 공지 */
@@ -381,8 +382,11 @@ function seg(name, current) {
 
 function listView() {
   const L = lists();
-  const showRest = S.expanded ? L.rest : L.rest.slice(0, 3);
-  const extra = L.rest.slice(3);
+  // 마감일이 있는 공지는 항상 다 보이고, 상시(마감일 없음) 공지만 접었다 펼 수 있어요
+  const dated = L.rest.filter(r => ddayOf(r) !== null);
+  const extra = L.rest.filter(r => ddayOf(r) === null);
+  const showRest = S.expanded ? dated.concat(extra) : dated;
+  const nRec = L.rest.length + L.starred.length;
   return `
   <div class="wrap">
     <div>
@@ -397,10 +401,9 @@ function listView() {
       ${L.starred.length ? `<div class="sec">★ 중요 표시한 공지 <small>체크한 공지는 항상 맨 위에</small></div>
         ${L.starred.map(card).join("")}` : ""}
 
-      <div class="sec">추천 공지 <small>마감 급한 순 · ☆를 누르면 위로 올라가요</small></div>
-      ${showRest.map(card).join("") || `<p class="note">보여줄 공지가 없어요. 오른쪽에서 태그를 켜거나 아래 숨긴 공지에서 다시 볼 수 있어요.</p>`}
-      ${extra.length ? `<button class="more" data-act="expand">${S.expanded ? "접기 ▲"
-        : `아래로 ${extra.length}개 더 · ${esc(extra.map(shortName).join(", "))} ▼`}</button>` : ""}
+      <div class="sec">추천 공지 <b class="cnt">${nRec}개</b> <small>마감 급한 순 · ☆를 누르면 위로 올라가요</small></div>
+      ${showRest.map(card).join("") || (extra.length ? "" : `<p class="note">보여줄 공지가 없어요. 오른쪽에서 태그를 켜거나 아래 숨긴 공지에서 다시 볼 수 있어요.</p>`)}
+      ${extra.length ? `<button class="more" data-act="expand">${S.expanded ? "접기 ▲" : `펼치기 ▼ <small>(상시 공지 ${extra.length}개)</small>`}</button>` : ""}
 
       ${L.hidden.length ? `<p class="note" style="text-align:center;margin-top:18px">필터로 숨긴 공지 ${L.hidden.length}개는 위쪽 <b>숨김</b> 메뉴에서 볼 수 있어요.</p>` : ""}
     </div>
