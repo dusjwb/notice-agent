@@ -214,12 +214,115 @@ def batch_prompt(profile, notices, today):
 """
 
 
-def run_batch(api_key, profile, notices, today):
+def ai_call(api_key, prompt, read_links=False, json_mode=False, log=None):
+    """Gemini 부르기. 빠르게: '생각하는 시간'을 끄고(thinking_budget=0) 바로 답하게 해요.
+    read_links=True면 Gemini가 글 속의 링크(URL)를 직접 열어서 읽어요 (URL context 기능)."""
     from google.genai import types
 
-    config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2)
-    resp = generate(get_client(api_key), batch_prompt(profile, notices, today), config, st.caption)
-    results = json.loads(resp.text)
+    base = {"temperature": 0.2}
+    if read_links:
+        base["tools"] = [types.Tool(url_context=types.UrlContext())]
+    elif json_mode:
+        base["response_mime_type"] = "application/json"
+    client = get_client(api_key)
+    try:
+        cfg = types.GenerateContentConfig(**base, thinking_config=types.ThinkingConfig(thinking_budget=0))
+        return generate(client, prompt, cfg, log)
+    except Exception as e:
+        if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
+            raise
+        # 일부 모델은 '생각 끄기'를 지원하지 않아요 → 기본 설정으로 다시
+        return generate(client, prompt, types.GenerateContentConfig(**base), log)
+
+
+def parse_json_list(text):
+    """AI 답에서 JSON 배열만 꺼내요 (```json ... ``` 으로 감싸서 와도 괜찮게)."""
+    import re
+    t = re.sub(r"```(?:json)?", "", text or "").strip()
+    i, j = t.find("["), t.rfind("]")
+    if i < 0 or j <= i:
+        return []
+    try:
+        v = json.loads(t[i:j + 1])
+    except Exception:
+        return []
+    return v if isinstance(v, list) else []
+
+
+def failed_links(resp):
+    """Gemini가 열지 못한 링크 목록 (답에 함께 오는 정보)"""
+    out = []
+    try:
+        for m in resp.candidates[0].url_context_metadata.url_metadata or []:
+            if "SUCCESS" not in str(getattr(m, "url_retrieval_status", "SUCCESS")):
+                out.append(getattr(m, "retrieved_url", ""))
+    except Exception:
+        pass
+    return [u for u in out if u]
+
+
+MAX_LINKS = 20   # Gemini가 한 번에 읽을 수 있는 링크 수
+
+
+def ai_find_posts(api_key, boards, log=None):
+    """1단계: Gemini가 게시판 페이지를 직접 읽고 최신 공지 목록(제목·주소)을 찾아요."""
+    from urllib.parse import urljoin
+    items = list(boards.items())[:MAX_LINKS]
+    per_board = max(1, min(4, MAX_LINKS // max(1, len(items))))
+    listing = "\n".join(f"- {n}: {u}" for n, u in items)
+    prompt = f"""아래 학교 게시판 페이지를 직접 열어서 읽고, 게시판마다 가장 최근 공지 글 {per_board}개의 제목과 글 주소를 알려줘.
+## 게시판
+{listing}
+## 규칙
+- 게시판 페이지에 실제로 보이는 공지 글만. 메뉴, 페이지 번호, 첨부파일 링크는 빼.
+- url은 그 글을 누르면 열리는 주소를 https:// 로 시작하는 전체 주소로.
+- 맨 위 고정 공지보다 최근에 올라온 글을 우선해.
+- 절대 지어내지 마. 페이지를 못 읽은 게시판은 빼.
+## 출력: JSON 배열만
+[{{"board": "게시판 이름", "title": "글 제목", "date": "게시일(있으면)", "url": "https://..."}}]"""
+    resp = ai_call(api_key, prompt, read_links=True, log=log)
+    posts, seen, count = [], set(), {}
+    for p in parse_json_list(resp.text):
+        if not isinstance(p, dict) or not p.get("title"):
+            continue
+        board = p.get("board") or items[0][0]
+        url = str(p.get("url") or "")
+        if url and not url.startswith("http"):
+            url = urljoin(boards.get(board, items[0][1]), url)
+        if url in seen or count.get(board, 0) >= per_board:
+            continue
+        seen.add(url)
+        count[board] = count.get(board, 0) + 1
+        posts.append({"id": str(len(posts) + 1), "board": board, "title": str(p["title"]).strip(),
+                      "date": p.get("date", ""), "url": url})
+    return posts[:MAX_LINKS], failed_links(resp)
+
+
+def ai_judge_posts(api_key, profile, posts, today, log=None):
+    """2단계: Gemini가 공지 글 주소를 직접 열어 읽고 판단해요."""
+    listing = "\n".join(f"[공지 {p['id']}] {p['title']} ({p['board']}) {p['url']}" for p in posts)
+    prompt = batch_prompt(profile, [], today).replace("## 공지 목록", "## 공지 목록 (각 주소를 직접 열어 본문을 읽고 판단해)") \
+        + listing + "\n\n본문을 못 읽은 공지는 제목만 보고 판단하고, reason 끝에 '(본문 확인 필요)'라고 붙여.\n"
+    resp = ai_call(api_key, prompt, read_links=True, log=log)
+    results = parse_json_list(resp.text)
+    by_id = {p["id"]: p for p in posts}
+    out = []
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        r["id"] = str(r.get("id", ""))
+        p = by_id.get(r["id"])
+        if not p:
+            continue
+        r.update(title=p["title"], url=p["url"], board=p["board"])
+        out.append(r)
+    return out, failed_links(resp)
+
+
+def run_batch(api_key, profile, notices, today):
+    """예시 공지·붙여넣은 공지 판단 (글이 이미 있으니 링크를 읽을 필요 없음)"""
+    resp = ai_call(api_key, batch_prompt(profile, notices, today), json_mode=True, log=st.caption)
+    results = parse_json_list(resp.text)
     by_id = {n["id"]: n for n in notices}
     for r in results:
         r["id"] = str(r["id"])
@@ -829,7 +932,7 @@ MY_KEY = batch_key(profile, boards if real_boards else {}, st.session_state["not
 # ── 홈 ────────────────────────────────
 if page == "홈":
     if real_boards:
-        source_note = f"실제 게시판 {len(boards)}곳에서 최신 공지를 모아 판단해요."
+        source_note = f"Gemini가 게시판 {len(boards)}곳의 링크를 직접 읽고 판단해요."
         notices = None
     else:
         with st.expander("공지 내용 보기 / 직접 붙여넣기 (단톡방 공지도 여기에)"):
@@ -844,18 +947,38 @@ if page == "홈":
     c2.caption(source_note + (f"  ·  마지막 판단: {batch['saved_at']}" if batch else "  ·  아직 판단한 결과가 없어요."))
 
     if run and ready():
-        with st.status("공지를 모으고 AI가 판단하는 중...", expanded=True) as status:
+        import time as _time
+        t0 = _time.time()
+        with st.status("AI가 일하는 중...", expanded=True) as status:
             try:
                 if notices is None:
-                    notices = collect_notices(boards, per_board=4 if len(boards) <= 6 else 2, log=st.write)  # 게시판이 많으면 2개씩
-                st.write(f"🤖 공지 {len(notices)}개를 한 번에 판단하는 중...")
-                results = run_batch(api_key, profile, notices, today)
+                    # 실제 게시판: 우리 코드는 학교 사이트에 접속하지 않고, Gemini가 링크를 직접 읽어요
+                    if len(boards) > MAX_LINKS:
+                        st.write(f"⚠️ 게시판이 많아서 앞의 {MAX_LINKS}곳만 읽어요.")
+                    st.write(f"1/3 🔍 Gemini가 게시판 {min(len(boards), MAX_LINKS)}곳을 직접 열어 최신 공지를 찾는 중...")
+                    posts, bad = ai_find_posts(api_key, boards, log=st.caption)
+                    if bad:
+                        st.write("⚠️ Gemini가 열지 못한 게시판: " + ", ".join(bad))
+                    if not posts:
+                        raise RuntimeError("Gemini가 게시판에서 공지를 찾지 못했어요. 게시판 링크가 맞는지 확인하거나, "
+                                           "사이드바 스위치를 꺼서 예시 공지로 시연해 주세요.")
+                    st.write(f"2/3 📄 최신 공지 {len(posts)}개를 찾았어요 ({_time.time() - t0:.0f}초)")
+                    st.write(f"3/3 🤖 Gemini가 공지 {len(posts)}개를 직접 읽고 판단하는 중...")
+                    results, bad = ai_judge_posts(api_key, profile, posts, today, log=st.caption)
+                    if bad:
+                        st.write(f"⚠️ 본문을 열지 못한 공지 {len(bad)}개는 제목만 보고 판단했어요.")
+                else:
+                    st.write(f"🤖 공지 {len(notices)}개를 한 번에 판단하는 중...")
+                    results = run_batch(api_key, profile, notices, today)
+                if not results:
+                    raise RuntimeError("AI 답을 읽지 못했어요. 잠시 뒤 다시 눌러 주세요.")
                 from datetime import datetime
                 batch = {"saved_at": datetime.now().strftime("%m/%d %H:%M"), "results": results,
                          "profile": profile, "today": today.isoformat(),
                          "source": f"실제 게시판 {len(boards)}곳" if real_boards else "예시 공지"}
                 save_batch(MY_KEY, batch)
-                status.update(label=f"완료! 공지 {len(results)}개를 판단했어요", state="complete", expanded=False)
+                status.update(label=f"완료! 공지 {len(results)}개를 판단했어요 ({_time.time() - t0:.0f}초)",
+                              state="complete", expanded=False)
             except Exception as e:
                 status.update(label="오류", state="error")
                 st.error(str(e))
