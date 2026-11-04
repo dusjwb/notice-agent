@@ -237,12 +237,19 @@ function loadState() {
   try { s = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) {}
   const present = TAGS.filter(t => DATA.results.some(r => tagOf(r) === t));
   const defaultOn = present.filter(t => ["취업", "자격증", "장학", "연구"].includes(t) || DATA.interests.includes(t));
-  return Object.assign({
+  const st = Object.assign({
     starred: [], disliked: [], excluded: [], liked: [], revealed: [],
-    tagsOn: defaultOn.length ? defaultOn : present,
+    tagsOn: DATA.allTags ? present : (defaultOn.length ? defaultOn : present),
     range: 8, view: "list", starOnly: false, icsMode: "star", expanded: false, q: "",
     calOffset: 0, calRange: 31, sel: ""
   }, s);
+  // 실제 게시판 결과: 처음 보는 분류는 켜진 채로 시작 (사용자가 끈 분류는 그대로 둬요)
+  if (DATA.allTags) {
+    const seen = st.seenTags || [];
+    present.filter(t => !seen.includes(t) && !st.tagsOn.includes(t)).forEach(t => st.tagsOn.push(t));
+    st.seenTags = [...new Set([...seen, ...present])];
+  }
+  return st;
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
 let S;

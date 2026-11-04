@@ -40,14 +40,17 @@ def get_client(api_key):
     return genai.Client(api_key=api_key)
 
 
+MAX_WAIT = 15   # 무료 한도에 걸렸을 때 최대로 기다리는 시간(초). 1분 안에 끝나도록 짧게
+
+
 def generate(client, contents, config, log=None):
     """모델을 순서대로 시도합니다.
-    무료 사용량(1분당 요청 수)을 넘기면 다른 모델로 바꿔보고, 그래도 안 되면 잠깐 기다렸다가 다시 시도해요."""
+    무료 사용량(1분당 요청 수)을 넘기면 바로 다른 모델로 바꾸고, 모두 막혔을 때만 잠깐(최대 15초) 기다려요."""
     import re
     import time
 
-    last = None
-    for attempt in range(4):
+    last, waited = None, 0
+    for attempt in range(2):
         # 지난번에 성공한 모델을 먼저 시도
         models = sorted(MODELS, key=lambda m: m != st.session_state.get("model"))
         wait = 0
@@ -63,12 +66,16 @@ def generate(client, contents, config, log=None):
                     found = re.search(r"retry in ([\d.]+)s", msg) or re.search(r"retryDelay': '(\d+)s", msg)
                     wait = max(wait, float(found.group(1)) if found else 30)
                 # 그 밖의 오류(모델 이름 없음 등)도 다음 모델로
-        if not wait:
+        if not wait or waited >= MAX_WAIT:
             break
-        wait = min(wait + 2, 65)
+        wait = min(wait + 1, MAX_WAIT - waited)
         if log:
-            log(f"⏳ 무료 사용량 한도에 걸려서 {int(wait)}초 기다렸다가 이어서 할게요...")
+            log(f"⏳ 무료 사용량 한도에 걸려서 {int(wait)}초만 기다렸다가 이어서 할게요...")
         time.sleep(wait)
+        waited += wait
+    if last and ("429" in str(last) or "RESOURCE_EXHAUSTED" in str(last)):
+        raise RuntimeError("AI 무료 사용량 한도에 걸렸어요. 30초~1분 뒤에 다시 눌러 주세요. "
+                           "(그동안 이미 판단한 결과는 그대로 볼 수 있어요)")
     raise RuntimeError(f"AI 호출 실패: {last}")
 
 
@@ -264,19 +271,23 @@ def failed_links(resp):
 MAX_LINKS = 20   # Gemini가 한 번에 읽을 수 있는 링크 수
 
 
-def ai_find_posts(api_key, boards, log=None):
-    """1단계: Gemini가 게시판 페이지를 직접 읽고 최신 공지 목록(제목·주소)을 찾아요."""
+def ai_find_posts(api_key, boards, today=None, log=None):
+    """1단계: Gemini가 게시판 페이지를 직접 읽고 최신 공지 목록(제목·주소)을 찾아요.
+    마감이 이미 지난 글은 빼고, 아직 신청할 수 있는 글 위주로 게시판마다 최대 4개."""
     from urllib.parse import urljoin
     items = list(boards.items())[:MAX_LINKS]
-    per_board = max(1, min(4, MAX_LINKS // max(1, len(items))))
+    per_board = max(2, min(4, MAX_LINKS // max(1, len(items))))
+    today_txt = today.isoformat() if today else "오늘"
     listing = "\n".join(f"- {n}: {u}" for n, u in items)
-    prompt = f"""아래 학교 게시판 페이지를 직접 열어서 읽고, 게시판마다 가장 최근 공지 글 {per_board}개의 제목과 글 주소를 알려줘.
+    prompt = f"""오늘은 {today_txt}이야. 아래 학교 게시판 페이지를 직접 열어서 읽고, 게시판마다 아직 신청할 수 있는 최근 공지 글을 최대 {per_board}개씩 골라 제목과 글 주소를 알려줘.
 ## 게시판
 {listing}
 ## 규칙
 - 게시판 페이지에 실제로 보이는 공지 글만. 메뉴, 페이지 번호, 첨부파일 링크는 빼.
 - url은 그 글을 누르면 열리는 주소를 https:// 로 시작하는 전체 주소로.
 - 맨 위 고정 공지보다 최근에 올라온 글을 우선해.
+- 제목이나 목록에 마감일이 보이고 그 날짜가 오늘보다 앞이면(이미 마감) 빼고, 목록을 더 내려서 다른 글을 골라.
+- 결과·합격자 발표, 단순 안내처럼 신청할 게 없는 글보다 모집·신청·채용·장학·특강 글을 우선해.
 - 절대 지어내지 마. 페이지를 못 읽은 게시판은 빼.
 ## 출력: JSON 배열만
 [{{"board": "게시판 이름", "title": "글 제목", "date": "게시일(있으면)", "url": "https://..."}}]"""
@@ -399,11 +410,11 @@ def export_entries(current_batch, today):
     return out
 
 
-def show_dashboard(results, today, interests, height=1450, mode="list"):
+def show_dashboard(results, today, interests, height=1450, mode="list", all_tags=False):
     import streamlit.components.v1 as components
 
     tpl = open("dashboard.html", encoding="utf-8").read()
-    data = json.dumps({"today": today.isoformat(), "interests": interests, "results": results},
+    data = json.dumps({"today": today.isoformat(), "interests": interests, "results": results, "allTags": all_tags},
                       ensure_ascii=False).replace("</", "<\\/")
     html = tpl.replace('/*__DATA__*/{"today": "2026-10-30", "interests": [], "results": []}', data)
     if mode in ("calendar", "hidden", "memory"):
@@ -955,8 +966,10 @@ if page == "홈":
                     # 실제 게시판: 우리 코드는 학교 사이트에 접속하지 않고, Gemini가 링크를 직접 읽어요
                     if len(boards) > MAX_LINKS:
                         st.write(f"⚠️ 게시판이 많아서 앞의 {MAX_LINKS}곳만 읽어요.")
-                    st.write(f"1/3 🔍 Gemini가 게시판 {min(len(boards), MAX_LINKS)}곳을 직접 열어 최신 공지를 찾는 중...")
-                    posts, bad = ai_find_posts(api_key, boards, log=st.caption)
+                    n_b = min(len(boards), MAX_LINKS)
+                    st.write(f"⏱️ 예상 시간 약 {20 + 3 * n_b}~{35 + 4 * n_b}초")
+                    st.write(f"1/3 🔍 Gemini가 게시판 {n_b}곳을 직접 열어 아직 신청할 수 있는 공지를 찾는 중...")
+                    posts, bad = ai_find_posts(api_key, boards, today, log=st.caption)
                     if bad:
                         st.write("⚠️ Gemini가 열지 못한 게시판: " + ", ".join(bad))
                     if not posts:
@@ -968,7 +981,7 @@ if page == "홈":
                     if bad:
                         st.write(f"⚠️ 본문을 열지 못한 공지 {len(bad)}개는 제목만 보고 판단했어요.")
                 else:
-                    st.write(f"🤖 공지 {len(notices)}개를 한 번에 판단하는 중...")
+                    st.write(f"⏱️ 예상 시간 약 5~15초 · 🤖 공지 {len(notices)}개를 한 번에 판단하는 중...")
                     results = run_batch(api_key, profile, notices, today)
                 if not results:
                     raise RuntimeError("AI 답을 읽지 못했어요. 잠시 뒤 다시 눌러 주세요.")
@@ -995,7 +1008,7 @@ if page == "홈":
             st.caption("다른 프로필도 넣고 싶으면 '✏️ 프로필 수정'으로 바꾼 뒤 'AI로 공지 판단하기'를 한 번 더 누르고 다시 받으세요.")
             st.download_button("📥 공지비서_Agent.html 받기", standalone_html(entries), file_name="공지비서_Agent.html",
                                mime="text/html", type="primary", use_container_width=True)
-        show_dashboard(batch["results"], today, interests)
+        show_dashboard(batch["results"], today, interests, all_tags=str(batch.get("source", "")).startswith("실제"))
         st.caption("☆ 중요 표시, 관심 없음, 관심 키워드, 제외 키워드 설정은 이 브라우저에 저장돼요. 숨긴 공지는 위쪽 '숨김'에서 볼 수 있어요.")
     else:
         st.info("위의 **🤖 AI로 공지 판단하기**를 누르면 마감 타임라인과 맞춤 공지 카드가 여기에 나타나요.")
@@ -1004,7 +1017,7 @@ if page == "홈":
 elif page == "숨김":
     batch = load_batch(MY_KEY)
     if batch and batch.get("results"):
-        show_dashboard(batch["results"], today, interests, height=1000, mode="hidden")
+        show_dashboard(batch["results"], today, interests, height=1000, mode="hidden", all_tags=str(batch.get("source", "")).startswith("실제"))
     else:
         st.info("먼저 **홈**에서 🤖 AI로 공지 판단하기를 눌러 주세요.")
 
@@ -1012,7 +1025,7 @@ elif page == "숨김":
 elif page == "캘린더":
     batch = load_batch(MY_KEY)
     if batch and batch.get("results"):
-        show_dashboard(batch["results"], today, interests, height=1080, mode="calendar")
+        show_dashboard(batch["results"], today, interests, height=1080, mode="calendar", all_tags=str(batch.get("source", "")).startswith("실제"))
     else:
         st.info("먼저 **홈**에서 🤖 AI로 공지 판단하기를 눌러 주세요. 판단한 공지의 마감일이 여기 캘린더에 표시돼요.")
 
@@ -1069,4 +1082,4 @@ elif page == "Agent에게 맡기기":
 # ── 기억 (이 브라우저에 저장된 내 설정) ─────────
 else:
     batch = load_batch(MY_KEY)
-    show_dashboard((batch or {}).get("results", []), today, interests, height=900, mode="memory")
+    show_dashboard((batch or {}).get("results", []), today, interests, height=900, mode="memory", all_tags=str((batch or {}).get("source", "")).startswith("실제"))
