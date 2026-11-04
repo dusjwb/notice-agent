@@ -81,7 +81,7 @@ def generate(client, contents, config, log=None, budget=None):
 
     t_start = time.time()
     last, waited, daily, out_of_time = None, 0, set(), False
-    for attempt in range(2):
+    for attempt in range(3):
         # 지난번에 성공한 모델을 먼저 시도
         models = sorted(model_list(client), key=lambda m: m != st.session_state.get("model"))
         wait = 0
@@ -104,6 +104,9 @@ def generate(client, contents, config, log=None, budget=None):
                         continue
                     found = re.search(r"retry in ([\d.]+)s", msg) or re.search(r"retryDelay': '(\d+)s", msg)
                     wait = max(wait, float(found.group(1)) if found else 30)
+                if any(k in msg for k in ("503", "UNAVAILABLE", "overloaded", "high demand", "500 INTERNAL")):
+                    wait = max(wait, 4)   # Google 서버가 잠깐 붐빔 → 다른 모델 시도, 다 안 되면 몇 초 뒤 다시
+                    continue
                 if "thinking" in msg.lower() and ("400" in msg or "INVALID" in msg):
                     raise RuntimeError("THINKING_UNSUPPORTED: " + msg)   # 모델을 바꾸지 말고 '생각 끄기' 없이 다시
                 # 그 밖의 오류(모델 이름 없음·예전 모델 막힘 등)도 다음 모델로
@@ -113,7 +116,8 @@ def generate(client, contents, config, log=None, budget=None):
             break
         wait = min(wait + 1, MAX_WAIT - waited)
         if log:
-            log(f"⏳ 무료 사용량 한도에 걸려서 {int(wait)}초만 기다렸다가 이어서 할게요...")
+            busy = last and any(k in str(last) for k in ("503", "UNAVAILABLE", "high demand"))
+            log(f"⏳ {'Google AI 서버가 붐벼서' if busy else '무료 사용량 한도에 걸려서'} {int(wait)}초만 기다렸다가 이어서 할게요...")
         time.sleep(wait)
         waited += wait
     if daily and all(m in daily for m in model_list(client)):
@@ -121,6 +125,9 @@ def generate(client, contents, config, log=None, budget=None):
     if last and ("429" in str(last) or "RESOURCE_EXHAUSTED" in str(last)):
         raise RuntimeError("AI 무료 사용량 한도에 걸렸어요. 30초~1분 뒤에 다시 눌러 주세요. "
                            "(그동안 이미 판단한 결과는 그대로 볼 수 있어요)")
+    if last and any(k in str(last) for k in ("503", "UNAVAILABLE", "overloaded", "high demand", "500 INTERNAL")):
+        raise RuntimeError("지금 Google AI 서버에 사람이 몰려서 잠깐 응답을 못 해요. 10~30초 뒤에 다시 눌러 주세요. "
+                           "(내 키나 사용량 문제는 아니에요)")
     raise RuntimeError(f"AI 호출 실패: {last}")
 
 
@@ -1020,6 +1027,11 @@ with st.sidebar:
         st.caption("아직 프로필을 입력하지 않았어요.")
     st.button("✏️ 프로필 수정" if major else "프로필 입력하기", use_container_width=True, on_click=open_profile)
     today = st.date_input("기준 날짜", date.today())
+    typed_key = st.text_input("Gemini API 키", key="api_key", type="password",
+                              help="저장해 둔 키가 있으면 비워둬도 돼요. 입력한 키는 이 브라우저 창에서만 쓰여요.")
+    api_key = typed_key or server_key()
+    if not typed_key and api_key:
+        st.caption("🔒 저장된 키를 사용 중이에요 (화면에는 보이지 않아요)")
 
     st.divider()
     st.header("🌐 게시판")
@@ -1076,12 +1088,6 @@ with st.sidebar:
                                   unsafe_allow_html=True)
                     col2.button("➕", key="addall_" + c["url"], on_click=add_board, args=(c["url"],))
 
-    st.divider()
-    typed_key = st.text_input("Gemini API 키", key="api_key", type="password",
-                              help="저장해 둔 키가 있으면 비워둬도 돼요. 입력한 키는 이 브라우저 창에서만 쓰여요.")
-    api_key = typed_key or server_key()
-    if not typed_key and api_key:
-        st.caption("🔒 저장된 키를 사용 중이에요 (화면에는 보이지 않아요)")
 
 profile = {"major": major, "grade": grade, "interests": interests, "extra": extra}
 if not major or st.session_state.get("profile_open"):
