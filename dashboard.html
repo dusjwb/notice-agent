@@ -1,0 +1,742 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #F4F5F8; --card: #FDFDFB; --line: #E3E6EC; --ink: #15213B; --muted: #6B7280;
+    --red: #C8401F; --orange: #B5651D; --navy: #15213B; --gold: #E0A21B; --cream: #FFFBEF;
+    --chip: #EEF1F6;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Noto Sans KR", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
+  body { padding: 4px 2px 40px; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  .wrap { display: grid; grid-template-columns: minmax(0, 2.15fr) minmax(260px, 1fr); gap: 24px; align-items: start; }
+  @media (max-width: 860px) { .wrap { grid-template-columns: minmax(0, 1fr); } }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 22px 24px; }
+  .panel h3 { margin: 0 0 14px; font-size: 15px; font-weight: 700; color: #3B4458; }
+  .note { font-size: 13px; color: var(--muted); line-height: 1.6; margin: 12px 0 0; }
+
+  /* 세그먼트 버튼 */
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #fff; }
+  .seg button { border: 0; background: transparent; padding: 6px 14px; font-size: 14px; color: var(--muted); }
+  .seg button.on { background: var(--ink); color: #fff; font-weight: 700; }
+  .btn-line { border: 1.5px solid var(--ink); background: #fff; border-radius: 10px; padding: 6px 14px; font-size: 14px; font-weight: 700; }
+  .btn-line:hover, .seg button:hover:not(.on) { background: var(--chip); }
+
+  /* 타임라인 */
+  .tl-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .tl-head h3 { margin: 0; }
+  .tl-tools { display: flex; gap: 10px; align-items: center; }
+  .tl { position: relative; height: 128px; margin: 10px 6px 0; }
+  .tl-line { position: absolute; left: 0; right: 0; top: 74px; height: 3px; background: #D5DAE3; border-radius: 2px; }
+  .tl-now { position: absolute; left: 0; top: 60px; width: 3px; height: 30px; background: var(--ink); border-radius: 2px; }
+  .tl-tick { position: absolute; top: 96px; font-size: 13px; color: var(--muted); transform: translateX(-50%); white-space: nowrap; }
+  .tl-tick.today { transform: none; left: 16px !important; font-weight: 700; color: var(--ink); }
+  .tl-dot { position: absolute; top: 75px; width: 14px; height: 14px; border-radius: 50%; transform: translate(-50%, -50%);
+    border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.06); cursor: pointer; }
+  .tl-dot.star { width: 22px; height: 22px; border: 3px solid var(--gold); }
+  .tl-label { position: absolute; padding: 4px 10px; border-radius: 7px; color: #fff; font-size: 13px; font-weight: 700;
+    white-space: nowrap; cursor: pointer; transform: translateX(-50%); }
+  .tl-empty { position: absolute; top: 30px; left: 0; right: 0; text-align: center; color: var(--muted); font-size: 14px; }
+
+  /* 섹션 제목 */
+  .sec { margin: 26px 0 12px; font-size: 15px; font-weight: 800; display: flex; align-items: baseline; gap: 10px; }
+  .sec small { font-weight: 400; color: var(--muted); font-size: 13.5px; }
+
+  /* 카드 */
+  .card { display: flex; background: var(--card); border: 1px solid var(--line); border-radius: 18px; overflow: hidden;
+    margin-bottom: 8px; box-shadow: 0 1px 2px rgba(21,33,59,.04); transition: box-shadow .3s; }
+  .card.starred { background: var(--cream); border: 2.5px solid var(--gold); }
+  .card.flash { box-shadow: 0 0 0 4px rgba(224,162,27,.55); }
+  .card-body { flex: 1; min-width: 0; padding: 10px 16px 10px 14px; }
+  .card-top { display: flex; align-items: center; gap: 8px; }
+  .star-btn { border: 0; background: none; font-size: 20px; line-height: 1; padding: 0 2px; color: #B7BDC8; }
+  .star-btn.on { color: var(--gold); }
+  .tag { background: var(--chip); border-radius: 7px; padding: 2px 8px; font-size: 12px; font-weight: 700; flex: none; }
+  .card-title { font-size: 16px; font-weight: 800; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-title a { color: inherit; text-decoration: none; }
+  .card-title a:hover { text-decoration: underline; }
+  .reason { margin: 3px 0 6px; color: #3B4458; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .rel { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); margin-right: 8px; }
+  .bar { width: 110px; height: 6px; background: #E6E9EF; border-radius: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--ink); border-radius: 4px; }
+  .rel b { color: var(--ink); }
+  .pill { border: 1.5px solid var(--line); border-radius: 999px; padding: 1px 9px; font-size: 12.5px; background: #fff; }
+  .nope { margin-left: auto; border: 1.5px solid var(--line); background: #fff; border-radius: 8px; padding: 2px 10px; font-size: 12.5px; color: var(--muted); }
+  .nope:hover { border-color: var(--red); color: var(--red); }
+  .stub { flex: 0 0 86px; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    border-left: 2px dashed rgba(90,20,5,.3); padding: 6px; text-align: center; }
+  .stub b { font-size: 22px; font-weight: 800; letter-spacing: .5px; font-family: "Noto Sans KR", sans-serif; line-height: 1.1; }
+  .stub span { font-size: 11.5px; opacity: .92; margin-top: 2px; }
+  .more { display: block; margin: 4px auto 0; border: 0; background: none; color: var(--muted); font-size: 14.5px; }
+  .more:hover { color: var(--ink); text-decoration: underline; }
+  @media (max-width: 640px) { .stub { flex-basis: 64px; } .stub b { font-size: 17px; } .bar { width: 70px; } }
+
+  /* 숨긴 공지 */
+  .hidden-box { border: 1.5px dashed #CDD3DD; border-radius: 18px; padding: 18px 22px; background: #F0F2F6; }
+  .search { width: 100%; border: 1.5px solid var(--line); border-radius: 10px; padding: 10px 14px; font-size: 14.5px; background: #fff; outline: none; }
+  .search:focus { border-color: var(--ink); }
+  .hrow { display: flex; align-items: center; gap: 10px; padding: 13px 0; border-bottom: 1px solid #DDE1E8; font-size: 15px; }
+  .hrow:last-child { border-bottom: 0; }
+  .hrow .t { flex: 1; min-width: 0; color: #4B5468; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .why { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 3px 10px; font-size: 12.5px; color: #4B5468; white-space: nowrap; }
+  .again { border: 1.5px solid var(--ink); background: #fff; border-radius: 9px; padding: 5px 14px; font-weight: 700; font-size: 14px; white-space: nowrap; }
+  .again:hover { background: var(--ink); color: #fff; }
+
+  /* 오른쪽 */
+  .side > .panel { margin-bottom: 20px; }
+  .tags { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tg { border: 1.5px solid var(--line); background: #fff; border-radius: 999px; padding: 5px 12px; font-size: 14px; color: var(--ink); }
+  .tg.on { background: #A9CBFF; color: #111827; border-color: #6FA3F0; font-weight: 700; }
+  .tg .n { opacity: .6; font-size: 12px; margin-left: 4px; }
+  .ex-row { display: flex; gap: 8px; }
+  .ex-row input { flex: 1; min-width: 0; border: 1.5px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 14px; outline: none; }
+  .ex-row input:focus { border-color: var(--ink); }
+  .ex-row button { border: 0; background: var(--ink); color: #fff; border-radius: 10px; padding: 0 18px; font-weight: 700; }
+  .ex-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .ex { background: #FBE7E2; border: 1.5px solid #F2C5B9; color: #9A3216; border-radius: 999px; padding: 5px 12px; font-size: 14px; }
+  .ex button { border: 0; background: none; color: inherit; padding: 0 0 0 4px; font-size: 14px; }
+  .ics-btn { width: 100%; border: 0; background: var(--red); color: #fff; border-radius: 12px; padding: 14px; font-size: 16px; font-weight: 800; }
+  .ics-btn:hover { filter: brightness(1.06); }
+  .ics-seg { margin-bottom: 12px; }
+  .msg { font-size: 13px; color: var(--red); margin-top: 8px; min-height: 1em; }
+
+  /* 캘린더 */
+  .cal-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+  .cal-head h2 { margin: 0; font-size: 30px; font-weight: 800; }
+  .cal-head .seg { margin-left: auto; }
+  body.calmode { padding: 28px 32px 40px; }
+  .star-only { border: 2px solid var(--gold); background: #fff; border-radius: 12px; padding: 8px 16px; font-weight: 700; font-size: 14.5px; }
+  .star-only.on { background: var(--cream); }
+  .cal { background: var(--card); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; }
+  .cal-row { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .cal-dow div { padding: 12px 14px; font-size: 14px; color: var(--muted); font-weight: 700; border-bottom: 1px solid var(--line); background: #F8F9FB; }
+  .cal-dow div:first-child { color: var(--red); }
+  .cell { min-height: 118px; border-right: 1px solid #EBEDF1; border-bottom: 1px solid #EBEDF1; padding: 10px 8px; }
+  .cell:nth-child(7n) { border-right: 0; }
+  .cell .d { font-weight: 700; font-size: 15px; margin: 0 0 6px 6px; }
+  .cell.dim .d { color: #B8BEC9; }
+  .cell.today { background: #FFF8E8; }
+  .cell.today .d::after { content: " 오늘"; font-size: 11px; color: var(--gold); }
+  .ev { display: block; width: 100%; text-align: left; border: 0; color: #fff; border-radius: 7px; padding: 5px 9px; margin-top: 5px;
+    font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ev.star { box-shadow: inset 0 0 0 2.5px var(--gold); }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; margin-top: 14px; font-size: 14px; color: var(--muted); }
+  .legend i { display: inline-block; width: 14px; height: 14px; border-radius: 4px; vertical-align: -2px; margin-right: 6px; }
+  .legend .tip { margin-left: auto; }
+
+  /* 메인 화면 캘린더 */
+  .mc-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .mc-head h3 { margin: 0; flex: 1; }
+  .nav { border: 1.5px solid var(--line); background: #fff; border-radius: 9px; width: 34px; height: 32px; font-size: 15px; }
+  .nav:hover { background: var(--chip); }
+  .mc-month { font-size: 17px; font-weight: 800; min-width: 112px; text-align: center; }
+  .small-btn { border: 1.5px solid var(--line); background: #fff; border-radius: 9px; padding: 5px 12px; font-size: 13.5px; }
+  .small-btn:hover { background: var(--chip); }
+  .cal.compact .cal-dow div { padding: 8px 10px; font-size: 13px; }
+  .cal.compact .cell { min-height: 84px; padding: 6px 5px; }
+  .cal.compact .cell .d { font-size: 13.5px; margin: 0 0 3px 5px; }
+  .cal.compact .ev { font-size: 12px; padding: 3px 7px; margin-top: 3px; }
+  .cell.past .d { color: #B8BEC9; text-decoration: line-through; }
+  .ev-more { display: block; width: 100%; border: 0; background: none; font-size: 12px; color: var(--muted); text-align: left; padding: 3px 6px; }
+  .ev-more:hover { color: var(--ink); text-decoration: underline; }
+  .mc-sum { font-size: 13.5px; color: var(--muted); margin: 12px 0 0; }
+  .mc-sum b { color: var(--ink); }
+
+  /* 단어로 거르기 */
+  .sug-title { font-size: 13.5px; font-weight: 700; color: #3B4458; margin: 18px 0 8px; }
+  .sugs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sug { border: 1.5px dashed #C9CFDA; background: #fff; border-radius: 999px; padding: 4px 11px; font-size: 13.5px; }
+  .sug:hover { border-style: solid; border-color: var(--red); color: var(--red); }
+  .sug .n { color: var(--muted); font-size: 12px; margin-left: 3px; }
+  #selpop { position: absolute; display: none; z-index: 50; transform: translateX(-50%); background: var(--ink);
+    border-radius: 10px; padding: 4px; box-shadow: 0 6px 18px rgba(21,33,59,.25); white-space: nowrap; }
+  #selpop button { border: 0; background: none; color: #fff; border-radius: 7px; padding: 6px 11px; font-size: 13.5px; font-weight: 700; }
+  #selpop button + button { border-left: 1px solid rgba(255,255,255,.25); border-radius: 0 7px 7px 0; }
+  .cal-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 22px; align-items: start; }
+  @media (max-width: 980px) { .cal-wrap { grid-template-columns: minmax(0, 1fr); } }
+  .detail { position: sticky; top: 12px; }
+  .detail .dd { color: #fff; border-radius: 14px; padding: 14px 18px; margin: 14px 0; display: flex; align-items: baseline; gap: 12px; }
+  .detail .dd b { font-size: 30px; font-weight: 800; }
+  .detail .dd span { font-size: 14.5px; opacity: .92; }
+  .detail .dt { font-size: 18px; font-weight: 800; margin: 10px 0 0; line-height: 1.45; }
+  .detail .dt a { color: inherit; }
+  .dl-row { font-size: 14px; color: #3B4458; margin: 8px 0; line-height: 1.6; }
+  .dl-row b { display: inline-block; min-width: 52px; color: var(--ink); }
+  .soon { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid #ECEEF2;
+    background: none; padding: 10px 2px; font-size: 14px; }
+  .soon:hover .st { text-decoration: underline; }
+  .soon .sd { flex: none; color: #fff; font-weight: 800; font-size: 12.5px; border-radius: 6px; padding: 3px 7px; min-width: 50px; text-align: center; }
+  .soon .st { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .soon .sm { color: var(--muted); font-size: 13px; }
+  .ev.sel { outline: 3px solid var(--gold); outline-offset: 1px; }
+  #selpop b { color: #FFD27A; margin-left: 4px; }
+  #pop-like:hover { background: #2E7D5B; }
+  #pop-ex:hover { background: var(--red); }
+  .cnt { font-weight: 400; color: var(--muted); font-size: 13px; margin-left: 4px; }
+  .lk { background: #A9CBFF; border: 1.5px solid #6FA3F0; color: #111827; border-radius: 999px; padding: 5px 12px; font-size: 14px; }
+  .lk button { border: 0; background: none; color: inherit; padding: 0 0 0 4px; font-size: 14px; }
+  .liked-chip { flex: none; background: #A9CBFF; color: #111827; border-radius: 7px; padding: 2px 8px; font-size: 12px; font-weight: 700; }
+  .ex-row input:disabled, .ex-row button:disabled { opacity: .45; cursor: not-allowed; }
+  .hid-head h2 { margin: 0; font-size: 26px; font-weight: 800; }
+  .hid-head { margin-bottom: 16px; }
+  body.hidmode { padding: 6px 4px 40px; }
+  .hrow .sd { flex: none; font-weight: 800; font-size: 12.5px; border-radius: 6px; padding: 3px 7px; min-width: 52px; text-align: center; }
+  .hrow .t a { color: inherit; text-decoration: none; }
+  .hrow .t a:hover { text-decoration: underline; }
+  .hrow .t small { display: block; font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--ink); color: #fff;
+    padding: 10px 18px; border-radius: 10px; font-size: 14px; margin: 0; box-shadow: 0 6px 18px rgba(21,33,59,.25); }
+  .grad-wrap { display: inline-flex; align-items: center; gap: 8px; }
+  .grad { display: inline-block; width: 120px; height: 12px; border-radius: 6px; }
+  .card-title, .reason { cursor: text; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="selpop"><button data-act="likeword" id="pop-like"></button><button data-act="exword" id="pop-ex"></button></div>
+<script>
+const DATA = /*__DATA__*/{"today": "2026-10-30", "interests": [], "results": []};
+const MODE = /*__MODE__*/"list";   // "list" = 메인 화면, "calendar" = 캘린더만 있는 창
+const SRC = "<!doctype html>\n" + document.documentElement.outerHTML;  // 새 창을 열 때 쓰는 이 화면의 원본
+
+const TAGS = ["취업", "자격증", "장학", "연구", "대외활동", "학사", "행사", "기타"];
+const KEY = "notice-dashboard-v1";
+const DAY = 864e5;
+const today = new Date(DATA.today + "T00:00:00");
+
+// ── 저장된 설정 불러오기 (이 브라우저에만 저장돼요) ──
+function loadState() {
+  let s = {};
+  try { s = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) {}
+  const present = TAGS.filter(t => DATA.results.some(r => tagOf(r) === t));
+  const defaultOn = present.filter(t => ["취업", "자격증", "장학", "연구"].includes(t) || DATA.interests.includes(t));
+  return Object.assign({
+    starred: [], disliked: [], excluded: [], liked: [], revealed: [],
+    tagsOn: defaultOn.length ? defaultOn : present,
+    range: 8, view: "list", starOnly: false, icsMode: "star", expanded: false, q: "",
+    calOffset: 0, calRange: 31, sel: ""
+  }, s);
+}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
+let S;
+
+// ── 계산 도우미 ──
+function tagOf(r) { return TAGS.includes(r.category) ? r.category : "기타"; }
+function ddayOf(r) {
+  if (!r.deadline) return null;
+  const d = new Date(r.deadline + "T00:00:00");
+  return isNaN(d) ? null : Math.round((d - today) / DAY);
+}
+// 마감까지 남은 날에 따라 색 구분: D-3 이내 빨강 · D-4~7 주황 · D-8 이후 파랑 · 마감일 없음/지남 회색
+const DDAY = "#8B0A0A", RED = "#D93025", ORANGE = "#EE7B1E", BLUE = "#2F6FDB", GRAY = "#9AA3B5";
+function colorOf(d) {
+  if (d === null || d < 0) return GRAY;
+  return d === 0 ? DDAY : d <= 3 ? RED : d <= 7 ? ORANGE : BLUE;  // 마감 당일은 진한 빨강
+}
+function fgOf(d) { return "#fff"; }
+function paint(d) { return `background:${colorOf(d)};color:${fgOf(d)}`; }
+function md(s) { const d = new Date(s + "T00:00:00"); return `${d.getMonth() + 1}/${d.getDate()}`; }
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c])); }
+function shortName(r) { return r.short || r.title.replace(/\[.*?\]\s*/g, "").slice(0, 8); }
+
+// 제외어를 찾는 범위: 제목·대상·요약·유형·추천 이유
+function hayOf(r) { return [r.title, r.target, r.summary, r.kind, r.reason].join(" "); }
+function likedWord(r) { return S.liked.find(k => k && hayOf(r).includes(k)); }
+const MAX_KW = 20;  // 관심 키워드·거르기 키워드 최대 개수
+let flash = {};     // 한 번만 보여줄 안내 문구
+function addKw(listName, w) {
+  w = (w || "").trim();
+  if (!w) return false;
+  const list = S[listName], other = listName === "liked" ? "excluded" : "liked";
+  if (list.includes(w)) return false;
+  if (list.length >= MAX_KW) {
+    flash[listName] = `최대 ${MAX_KW}개까지 등록할 수 있어요. 안 쓰는 키워드를 ✕로 지우고 추가하세요.`;
+    return false;
+  }
+  S[other] = S[other].filter(k => k !== w);  // 한 단어가 관심·제외에 동시에 있지 않게
+  list.push(w);
+  return true;
+}
+function countWord(w) { return DATA.results.filter(r => hayOf(r).includes(w)).length; }
+
+// 공지 제목에서 자주 나오는 단어 (눌러서 제외)
+const STOP = new Set(["모집", "안내", "신청", "대상", "관련", "및", "위한", "대비", "참가", "참여자", "참가자", "공고",
+  "선발", "지원", "사업", "프로그램", "추가", "운영", "변경", "따른", "개최", "학년도", "학기", "상반기", "하반기"]);
+function words(r) {
+  return [...new Set(r.title.replace(/[\[\]\(\)「」『』<>·,:/~!?'"“”‘’★☆]/g, " ").split(/\s+/)
+    .map(w => w.replace(/(을|를|의|에|와|과|로)$/, ""))
+    .filter(w => w.length >= 2 && w.length <= 10 && !STOP.has(w) && !/^\d/.test(w) && !/^제\d+회$/.test(w)))];
+}
+function suggestions() {
+  const cnt = {};
+  lists().shown.forEach(r => words(r).forEach(w => { cnt[w] = (cnt[w] || 0) + 1; }));
+  return Object.entries(cnt).filter(([w]) => !S.excluded.includes(w) && !S.liked.includes(w))
+    .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length).slice(0, 14).map(([w]) => w);
+}
+
+function hiddenReason(r) {
+  if (S.revealed.includes(r.id)) return null;
+  if (S.disliked.includes(r.id)) return "관심 없음";
+  const d = ddayOf(r);
+  if (d !== null && d < 0) return "마감 지남";
+  const kw = S.excluded.find(k => k && hayOf(r).includes(k));
+  if (kw) return "제외어: " + kw;
+  if (likedWord(r)) return null;  // 관심 키워드가 들어가면 태그·AI 판단과 상관없이 보여줌
+  if (!r.relevant) return "AI 판단: 대상 아님";
+  if (!S.tagsOn.includes(tagOf(r))) return "관심 분류 꺼짐: " + tagOf(r);
+  return null;
+}
+function sortKey(a, b) {
+  const da = ddayOf(a), db = ddayOf(b);
+  return (da ?? 999) - (db ?? 999) || (b.score || 0) - (a.score || 0);
+}
+function lists() {
+  const shown = DATA.results.filter(r => !hiddenReason(r)).sort(sortKey);
+  return {
+    shown,
+    starred: shown.filter(r => S.starred.includes(r.id)),
+    rest: shown.filter(r => !S.starred.includes(r.id)),
+    hidden: DATA.results.filter(r => hiddenReason(r)).sort(sortKey),
+  };
+}
+
+// ── 화면 그리기 ──
+function render() {
+  const app = document.getElementById("app");
+  app.innerHTML = MODE === "calendar" ? calendarPage() : MODE === "hidden" ? hiddenPage() : listView();
+  if (MODE === "list") drawTimeline();
+  bind();
+}
+
+// 캘린더만 있는 새 창 열기 (같은 화면 코드를 '캘린더 모드'로 엽니다)
+function openCalendarWindow() {
+  const html = SRC.replace('/*__MODE__*/"list"', '"calendar"');
+  const w = window.open("", "notice-calendar", "width=1320,height=920");
+  const note = document.getElementById("popnote");
+  if (!w) {
+    note.textContent = "브라우저가 새 창을 막았어요. 주소창 오른쪽의 팝업 차단 아이콘을 눌러 허용하거나, 위쪽 '캘린더' 버튼을 이용하세요.";
+    return;
+  }
+  w.document.open(); w.document.write(html); w.document.close(); w.focus();
+  note.textContent = "";
+}
+
+function seg(name, current) {
+  const opts = [[8, "1주"], [15, "2주"], [31, "한 달"]];
+  return `<div class="seg">${opts.map(([v, t]) =>
+    `<button data-act="${name}" data-v="${v}" class="${current === v ? "on" : ""}">${t}</button>`).join("")}</div>`;
+}
+
+function listView() {
+  const L = lists();
+  const showRest = S.expanded ? L.rest : L.rest.slice(0, 3);
+  const extra = L.rest.slice(3);
+  return `
+  <div class="wrap">
+    <div>
+      <div class="panel">
+        <div class="tl-head">
+          <h3>마감 타임라인</h3>
+          <div class="tl-tools">${seg("range", S.range)}</div>
+        </div>
+        <div class="tl" id="tl"></div>
+      </div>
+
+      ${L.starred.length ? `<div class="sec">★ 중요 표시한 공지 <small>체크한 공지는 항상 맨 위에</small></div>
+        ${L.starred.map(card).join("")}` : ""}
+
+      <div class="sec">추천 공지 <small>마감 급한 순 · ☆를 누르면 위로 올라가요</small></div>
+      ${showRest.map(card).join("") || `<p class="note">보여줄 공지가 없어요. 오른쪽에서 태그를 켜거나 아래 숨긴 공지에서 다시 볼 수 있어요.</p>`}
+      ${extra.length ? `<button class="more" data-act="expand">${S.expanded ? "접기 ▲"
+        : `아래로 ${extra.length}개 더 · ${esc(extra.map(shortName).join(", "))} ▼`}</button>` : ""}
+
+      ${L.hidden.length ? `<p class="note" style="text-align:center;margin-top:18px">필터로 숨긴 공지 ${L.hidden.length}개는 위쪽 <b>숨김</b> 메뉴에서 볼 수 있어요.</p>` : ""}
+    </div>
+
+    <div class="side">
+      <div class="panel">
+        <h3>관심 키워드</h3>
+        <div class="tags">${TAGS.filter(t => DATA.results.some(r => tagOf(r) === t)).map(t => {
+          const n = DATA.results.filter(r => tagOf(r) === t).length;
+          const on = S.tagsOn.includes(t);
+          return `<button class="tg ${on ? "on" : ""}" data-act="tag" data-v="${t}">${on ? "✓ " : ""}${t}<span class="n">${n}</span></button>`;
+        }).join("")}</div>
+        <p class="note" style="margin-top:8px">AI가 공지마다 붙인 분류예요. 켠 분류만 카드에 보여요.</p>
+        <p class="sug-title">직접 추가한 관심 단어 <span class="cnt">${S.liked.length}/${MAX_KW}</span></p>
+        <div class="ex-row"><input id="likein" placeholder="관심 있는 단어 (예: 공기업, 전력)" ${S.liked.length >= MAX_KW ? "disabled" : ""}><button data-act="likeadd" ${S.liked.length >= MAX_KW ? "disabled" : ""}>추가</button></div>
+        <div class="ex-chips">${S.liked.map(k =>
+          `<span class="lk">${esc(k)}<button data-act="likedel" data-v="${esc(k)}" aria-label="${esc(k)} 지우기">✕</button></span>`).join("")}</div>
+        <div class="msg">${esc(flash.liked || "")}</div>
+        <p class="note">이 단어가 들어간 공지는 분류가 꺼져 있어도<br>항상 보여주고, 카드에 ⭐ 표시를 붙여요.</p>
+      </div>
+
+      <div class="panel">
+        <h3>제외 키워드 <span class="cnt">${S.excluded.length}/${MAX_KW}</span></h3>
+        <div class="ex-row"><input id="exin" placeholder="제외할 키워드 (예: 1~2학년)" ${S.excluded.length >= MAX_KW ? "disabled" : ""}><button data-act="exadd" ${S.excluded.length >= MAX_KW ? "disabled" : ""}>추가</button></div>
+        <div class="ex-chips">${S.excluded.map(k =>
+          `<span class="ex">${esc(k)}<button data-act="exdel" data-v="${esc(k)}" aria-label="${esc(k)} 지우기">✕</button></span>`).join("")}</div>
+        <div class="msg">${esc(flash.excluded || "")}</div>
+        ${suggestions().length ? `<p class="sug-title">공지에 자주 나오는 단어 · 누르면 제외</p>
+        <div class="sugs">${suggestions().map(w =>
+          `<button class="sug" data-act="exword" data-v="${esc(w)}">${esc(w)}<span class="n">${countWord(w)}</span></button>`).join("")}</div>` : ""}
+        <p class="note">카드의 제목이나 설명에서 단어를 <b>드래그</b>하면<br>관심 키워드나 제외 키워드로 바로 넣을 수 있어요.<br>'관심 없음'을 누른 공지 유형도 여기에 쌓여요.</p>
+      </div>
+
+      <div class="panel">
+        <h3>한 번에 등록</h3>
+        <div class="seg ics-seg">
+          <button data-act="icsmode" data-v="star" class="${S.icsMode === "star" ? "on" : ""}">★ 중요 표시만</button>
+          <button data-act="icsmode" data-v="all" class="${S.icsMode === "all" ? "on" : ""}">보이는 공지 전체</button>
+        </div>
+        <button class="ics-btn" data-act="ics">★ 공지 마감일 캘린더에 추가</button>
+        <div class="msg" id="icsmsg"></div>
+        <p class="note">받은 파일을 열면 구글·애플 캘린더에 들어가요.<br>마감 3일 전, 1일 전 알림 포함</p>
+      </div>
+    </div>
+  </div>`;
+}
+
+function card(r) {
+  const d = ddayOf(r), st = S.starred.includes(r.id);
+  const title = r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title);
+  return `
+  <div class="card ${st ? "starred" : ""}" id="c-${r.id}">
+    <div class="card-body">
+      <div class="card-top">
+        <button class="star-btn ${st ? "on" : ""}" data-act="star" data-id="${r.id}" aria-label="중요 표시">${st ? "★" : "☆"}</button>
+        <span class="tag">${esc(tagOf(r))}</span>
+        ${likedWord(r) ? `<span class="liked-chip">⭐ ${esc(likedWord(r))}</span>` : ""}
+        <h4 class="card-title" title="${esc(r.title)}">${title}</h4>
+      </div>
+      <p class="reason">${esc(r.reason)}</p>
+      <div class="meta">
+        <span class="rel">관련도 <span class="bar"><i style="width:${Math.max(0, Math.min(100, r.score || 0))}%"></i></span><b>${r.score ?? "-"}</b></span>
+        ${(r.checklist || []).slice(0, 3).map(c => `<span class="pill">${esc(c)}</span>`).join("")}
+        <button class="nope" data-act="nope" data-id="${r.id}">관심 없음</button>
+      </div>
+    </div>
+    <div class="stub" style="${paint(d)}">
+      <b>${d === null ? "상시" : d === 0 ? "D-DAY" : "D-" + d}</b>
+      <span>${r.deadline ? md(r.deadline) + " 마감" : "마감일 없음"}</span>
+    </div>
+  </div>`;
+}
+
+function drawTimeline() {
+  const box = document.getElementById("tl");
+  const W = box.clientWidth, pad = 24, range = S.range;
+  const x = d => pad + (d / range) * (W - pad * 2);
+  const L = lists();
+  const items = L.shown.filter(r => { const d = ddayOf(r); return d !== null && d >= 0 && d <= range; })
+    .sort((a, b) => ddayOf(a) - ddayOf(b));
+  const step = range <= 8 ? 2 : range <= 15 ? 3 : 7;
+  let html = `<div class="tl-line"></div><div class="tl-now"></div><div class="tl-tick today" style="left:0">오늘</div>`;
+  for (let d = step; d <= range; d += step) {
+    if (x(d) > W - 20) break;
+    const t = new Date(today.getFullYear(), today.getMonth(), today.getDate() + d);
+    html += `<div class="tl-tick" style="left:${x(d)}px">${t.getMonth() + 1}/${t.getDate()}</div>`;
+  }
+  if (!items.length) html += `<div class="tl-empty">이 기간에 마감되는 공지가 없어요</div>`;
+  box.innerHTML = html;
+
+  // 라벨이 겹치지 않게 두 줄로 나눠 배치
+  const placed = [[], []];
+  items.forEach(r => {
+    const d = ddayOf(r), st = S.starred.includes(r.id), cx = x(d);
+    const dot = document.createElement("div");
+    dot.className = "tl-dot" + (st ? " star" : "");
+    dot.style.left = cx + "px"; dot.style.background = colorOf(d);
+    dot.dataset.act = "focus"; dot.dataset.id = r.id; dot.title = r.title;
+    box.appendChild(dot);
+
+    const lab = document.createElement("div");
+    lab.className = "tl-label";
+    lab.textContent = (st ? "★ " : "") + (d === 0 ? "D-DAY " : "D-" + d + " ") + shortName(r);
+    lab.style.background = colorOf(d); lab.style.color = fgOf(d);
+    lab.dataset.act = "focus"; lab.dataset.id = r.id; lab.title = r.title;
+    box.appendChild(lab);
+    const w = lab.offsetWidth;
+    let left = Math.min(Math.max(cx, w / 2), W - w / 2);
+    let lvl = placed.findIndex(row => row.every(([a, b]) => left + w / 2 + 6 < a || left - w / 2 - 6 > b));
+    if (lvl < 0) { lab.remove(); return; }  // 자리가 없으면 이름표는 빼고 점만 (점을 눌러도 카드로 이동)
+    placed[lvl].push([left - w / 2, left + w / 2]);
+    lab.style.left = left + "px";
+    lab.style.top = (lvl === 0 ? 4 : 30) + "px";
+  });
+}
+
+// ── 숨김 화면: 필터로 숨긴 공지 모아보기 ──
+function hiddenRows() {
+  const q = S.q.trim();
+  const L = lists().hidden.filter(r => !q || r.title.includes(q));
+  return L.map(r => { const d = ddayOf(r); return `
+    <div class="hrow">
+      <span class="sd" style="${paint(d)}">${d === null ? "상시" : d < 0 ? "지남" : d === 0 ? "D-DAY" : "D-" + d}</span>
+      <span class="t" title="${esc(r.reason)}">${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title)}
+        <small>${esc(r.reason || "")}</small></span>
+      <span class="why">${esc(hiddenReason(r))}</span>
+      <button class="again" data-act="reveal" data-id="${r.id}">다시 보기</button></div>`; }).join("")
+    || `<p class="note">${q ? "찾는 공지가 없어요." : "숨긴 공지가 없어요."}</p>`;
+}
+function hiddenPage() {
+  const H = lists().hidden;
+  const groups = {};
+  H.forEach(r => { const k = hiddenReason(r).split(":")[0]; groups[k] = (groups[k] || 0) + 1; });
+  return `
+  <div class="hid-head">
+    <h2>숨긴 공지 ${H.length}개</h2>
+    <p class="note" style="margin:6px 0 0">${Object.entries(groups).map(([k, n]) => `${esc(k)} ${n}개`).join(" · ") || "숨긴 공지가 없어요."}</p>
+  </div>
+  <div class="hidden-box">
+    <input class="search" id="q" placeholder="숨긴 공지에서 검색" value="${esc(S.q)}">
+    <div id="hlist">${hiddenRows()}</div>
+  </div>
+  ${S.excluded.length ? `<div class="panel" style="margin-top:18px"><h3>지금 쓰고 있는 제외 키워드 <span class="cnt">${S.excluded.length}/${MAX_KW}</span></h3>
+    <div class="ex-chips" style="margin-top:0">${S.excluded.map(k =>
+      `<span class="ex">${esc(k)}<button data-act="exdel" data-v="${esc(k)}" aria-label="${esc(k)} 지우기">✕</button></span>`).join("")}</div>
+    <p class="note">✕를 누르면 그 단어로 숨긴 공지가 다시 홈에 나타나요.</p></div>` : ""}
+  ${flash.revealed ? `<p class="toast">${esc(flash.revealed)}</p>` : ""}`;
+}
+
+// ── 캘린더 ──
+function ymd(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+function monthBase() {  // 기본: 오늘+7일이 속한 달 (월말이면 다음 달이 먼저 보이게)
+  const ref = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 7);
+  return new Date(ref.getFullYear(), ref.getMonth() + S.calOffset, 1);
+}
+function monthTitle() { const b = monthBase(); return `${b.getFullYear()}년 ${b.getMonth() + 1}월`; }
+function calEvents() { return lists().shown.filter(r => r.deadline && (!S.starOnly || S.starred.includes(r.id))); }
+
+function gridHTML(start, weeks, monthRef, compact) {
+  const evs = calEvents();
+  let cells = "";
+  for (let i = 0; i < weeks * 7; i++) {
+    const day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const key = ymd(day);
+    const dim = monthRef !== null && day.getMonth() !== monthRef;
+    const isToday = day.getTime() === today.getTime();
+    const past = day < today;
+    const list = evs.filter(r => r.deadline === key).sort(sortKey);
+    const showN = compact ? 2 : 99;
+    cells += `<div class="cell ${dim ? "dim" : ""} ${isToday ? "today" : ""} ${past && !isToday ? "past" : ""}"><p class="d">${day.getDate()}</p>${
+      list.slice(0, showN).map(r => {
+        const st = S.starred.includes(r.id);
+        return `<button class="ev ${st ? "star" : ""} ${S.sel === r.id ? "sel" : ""}" style="${paint(ddayOf(r))}" data-act="focus" data-id="${r.id}" title="${esc(r.title)} · ${r.deadline} 마감">${st ? "★ " : ""}${esc(shortName(r))}</button>`;
+      }).join("")}${list.length > showN ? `<button class="ev-more" data-act="calbig" title="${esc(list.slice(showN).map(r => r.title).join("\n"))}">+${list.length - showN}개 더</button>` : ""}</div>`;
+  }
+  return `<div class="cal ${compact ? "compact" : ""}">
+    <div class="cal-row cal-dow">${["일", "월", "화", "수", "목", "금", "토"].map(d => `<div>${d}</div>`).join("")}</div>
+    <div class="cal-row">${cells}</div></div>`;
+}
+function monthGrid(compact) {
+  const first = monthBase();
+  const start = new Date(first.getFullYear(), first.getMonth(), 1 - first.getDay());
+  const last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
+  return gridHTML(start, Math.ceil((last.getDate() + first.getDay()) / 7), first.getMonth(), compact);
+}
+function legendHTML() {
+  return `<div class="legend">
+    <span><i style="background:${DDAY}"></i>D-DAY</span>
+    <span><i style="background:${RED}"></i>D-1~3</span>
+    <span><i style="background:${ORANGE}"></i>D-4~7</span>
+    <span><i style="background:${BLUE}"></i>D-8 이후</span>
+    <span><i style="background:${GRAY}"></i>마감일 없음</span>
+    <span><i style="background:#fff;border:2.5px solid var(--gold)"></i>★ 중요 표시</span>
+    <span class="tip">공지를 누르면 오른쪽에 자세한 내용이 나와요</span>
+  </div>`;
+}
+function monthSummary() {
+  const b = monthBase();
+  const inMonth = calEvents().filter(r => { const d = new Date(r.deadline + "T00:00:00"); return d.getFullYear() === b.getFullYear() && d.getMonth() === b.getMonth(); });
+  const left = inMonth.filter(r => ddayOf(r) >= 0);
+  const thisWeek = left.filter(r => ddayOf(r) <= 7);
+  return `<p class="mc-sum">${b.getMonth() + 1}월에 마감되는 공지 <b>${inMonth.length}개</b> · 남은 마감 <b>${left.length}개</b>${
+    thisWeek.length ? ` · 일주일 안에 마감 <b style="color:var(--red)">${thisWeek.length}개</b>` : ""}</p>`;
+}
+
+function calendarPage() {
+  const R = S.calRange;
+  let grid, title;
+  if (R === 31) {
+    grid = monthGrid(false); title = monthTitle();
+  } else {
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay());
+    const weeks = Math.ceil((today.getDay() + R) / 7);  // 오늘부터 고른 기간이 다 보이게
+    grid = gridHTML(start, weeks, null, false);
+    title = `${today.getMonth() + 1}월 ${today.getDate()}일부터 ${R === 8 ? "1주" : "2주"}`;
+  }
+  document.title = "캘린더 · 공지 비서";
+  return `
+  <div class="cal-head">
+    ${R === 31 ? `<button class="nav" data-act="calprev" aria-label="이전 달">◀</button>` : ""}
+    <h2>${title} 캘린더</h2>
+    ${R === 31 ? `<button class="nav" data-act="calnext" aria-label="다음 달">▶</button>
+      <button class="small-btn" data-act="calnow">처음으로</button>` : ""}
+    ${seg("calrange", R)}
+    <button class="star-only ${S.starOnly ? "on" : ""}" data-act="staronly">★ 중요 표시만 보기${S.starOnly ? " ✓" : ""}</button>
+  </div>
+  <div class="cal-wrap">
+    <div>${grid}${legendHTML()}${R === 31 ? monthSummary() : ""}</div>
+    <div class="panel detail">${detailHTML()}</div>
+  </div>`;
+}
+
+// 캘린더 창 오른쪽: 누른 공지의 상세 정보 (안 눌렀으면 곧 마감되는 공지 목록)
+function detailHTML() {
+  const r = DATA.results.find(x => x.id === S.sel && !hiddenReason(x));
+  if (!r) {
+    const soon = calEvents().filter(x => ddayOf(x) >= 0).sort(sortKey).slice(0, 8);
+    return `<h3>곧 마감되는 공지</h3>${soon.map(x => `
+      <button class="soon" data-act="sel" data-id="${x.id}">
+        <span class="sd" style="${paint(ddayOf(x))}">${ddayOf(x) === 0 ? "D-DAY" : "D-" + ddayOf(x)}</span>
+        <span class="st">${S.starred.includes(x.id) ? "★ " : ""}${esc(x.title)}</span>
+        <span class="sm">${md(x.deadline)}</span></button>`).join("") || `<p class="note">남은 마감이 없어요.</p>`}
+      <p class="note">캘린더나 목록에서 공지를 누르면 자세히 볼 수 있어요.</p>`;
+  }
+  const d = ddayOf(r), st = S.starred.includes(r.id);
+  return `
+    <button class="small-btn" data-act="sel" data-id="">← 곧 마감 목록</button>
+    <div class="dd" style="${paint(d)}"><b>${d === null ? "상시" : d === 0 ? "D-DAY" : d < 0 ? "마감 지남" : "D-" + d}</b>
+      <span>${r.deadline ? r.deadline.replace(/-/g, ".") + " 마감" : "마감일 없음"}</span></div>
+    <div class="card-top"><span class="tag">${esc(tagOf(r))}</span>
+      <button class="star-btn ${st ? "on" : ""}" data-act="star" data-id="${r.id}" aria-label="중요 표시">${st ? "★" : "☆"}</button></div>
+    <h4 class="dt">${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)} ↗</a>` : esc(r.title)}</h4>
+    <p class="reason">💡 ${esc(r.reason)}</p>
+    ${r.summary ? `<p class="dl-row"><b>요약</b>${esc(r.summary)}</p>` : ""}
+    ${r.target ? `<p class="dl-row"><b>대상</b>${esc(r.target)}</p>` : ""}
+    ${r.how_to_apply ? `<p class="dl-row"><b>신청</b>${esc(r.how_to_apply)}</p>` : ""}
+    ${(r.checklist || []).length ? `<p class="dl-row"><b>준비물</b></p><div class="meta">${r.checklist.map(c => `<span class="pill">${esc(c)}</span>`).join("")}</div>` : ""}
+    <p class="note">관련도 ${r.score ?? "-"}점</p>`;
+}
+
+// ── 캘린더 파일(.ics) 만들기 ──
+function downloadIcs() {
+  const L = lists();
+  const items = (S.icsMode === "star" ? L.starred : L.shown).filter(r => r.deadline);
+  const msg = document.getElementById("icsmsg");
+  if (!items.length) {
+    msg.textContent = S.icsMode === "star" ? "★ 중요 표시한 공지가 없어요. ☆를 눌러 표시하거나 '보이는 공지 전체'를 고르세요." : "마감일이 있는 공지가 없어요.";
+    return;
+  }
+  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//KCC//Notice Agent//KO"];
+  items.forEach(r => {
+    const d = r.deadline.replace(/-/g, "");
+    lines.push("BEGIN:VEVENT", `UID:notice-${r.id}-${d}@notice-agent`, `DTSTART;VALUE=DATE:${d}`,
+      `SUMMARY:[마감] ${r.title}`, `DESCRIPTION:${(r.how_to_apply || "").replace(/\n/g, " ")}`,
+      "BEGIN:VALARM", "TRIGGER:-P3D", "ACTION:DISPLAY", "DESCRIPTION:마감 3일 전", "END:VALARM",
+      "BEGIN:VALARM", "TRIGGER:-P1D", "ACTION:DISPLAY", "DESCRIPTION:마감 1일 전", "END:VALARM", "END:VEVENT");
+  });
+  lines.push("END:VCALENDAR");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([lines.join("\r\n")], {type: "text/calendar"}));
+  a.download = "공지_마감일.ics";
+  document.body.appendChild(a); a.click(); a.remove();
+  msg.style.color = "var(--muted)";
+  msg.textContent = `${items.length}개 공지의 마감일 파일을 받았어요.`;
+}
+
+// ── 버튼 동작 ──
+function toggle(arr, v) { const i = arr.indexOf(v); i < 0 ? arr.push(v) : arr.splice(i, 1); }
+function focusCard(id) {
+  S.expanded = true;
+  if (S.disliked.includes(id) || !lists().shown.some(r => r.id === id)) toggle(S.revealed, id);
+  save(); render();
+  const el = document.getElementById("c-" + id);
+  if (el) { el.scrollIntoView({behavior: "smooth", block: "center"}); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1600); }
+}
+document.addEventListener("click", e => {
+    const el = e.target.closest("[data-act]");
+    if (!el) return;
+    const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
+    if (act === "star") toggle(S.starred, id);
+    else if (act === "nope") {
+      if (!S.disliked.includes(id)) S.disliked.push(id);
+      S.revealed = S.revealed.filter(x => x !== id);
+      S.starred = S.starred.filter(x => x !== id);
+      const r = DATA.results.find(x => x.id === id);
+      if (r && r.kind && !S.excluded.includes(r.kind) && S.excluded.length < MAX_KW) addKw("excluded", r.kind);
+    }
+    else if (act === "reveal") {
+      S.disliked = S.disliked.filter(x => x !== id); if (!S.revealed.includes(id)) S.revealed.push(id);
+      const r = DATA.results.find(x => x.id === id);
+      if (r) flash.revealed = `'${r.title.slice(0, 24)}' 공지를 홈으로 돌려놨어요.`;
+    }
+    else if (act === "range") S.range = Number(v);
+    else if (act === "tag") toggle(S.tagsOn, v);
+    else if (act === "exdel") S.excluded = S.excluded.filter(k => k !== v);
+    else if (act === "exadd") addKw("excluded", document.getElementById("exin").value);
+    else if (act === "likeadd") addKw("liked", document.getElementById("likein").value);
+    else if (act === "likedel") S.liked = S.liked.filter(k => k !== v);
+    else if (act === "expand") S.expanded = !S.expanded;
+    else if (act === "staronly") S.starOnly = !S.starOnly;
+    else if (act === "icsmode") S.icsMode = v;
+    else if (act === "ics") { downloadIcs(); return; }
+    else if (act === "focus") {
+      if (MODE === "calendar") S.sel = id; else { focusCard(id); return; }
+    }
+    else if (act === "sel") S.sel = id;
+    else if (act === "calrange") S.calRange = Number(v);
+    else if (act === "popcal") { openCalendarWindow(); return; }
+    else if (act === "exword") {
+      addKw("excluded", v);
+      hidePop(); window.getSelection().removeAllRanges();
+    }
+    else if (act === "likeword") { addKw("liked", v); hidePop(); window.getSelection().removeAllRanges(); }
+    else if (act === "calprev") S.calOffset -= 1;
+    else if (act === "calnext") S.calOffset += 1;
+    else if (act === "calnow") S.calOffset = 0;
+    save(); render();
+});
+function bind() {
+  const exin = document.getElementById("exin");
+  if (exin) exin.addEventListener("keydown", e => { if (e.key === "Enter") document.querySelector('[data-act="exadd"]').click(); });
+  const likein = document.getElementById("likein");
+  if (likein) likein.addEventListener("keydown", e => { if (e.key === "Enter") document.querySelector('[data-act="likeadd"]').click(); });
+  flash = {};  // 안내 문구는 한 번만
+  const q = document.getElementById("q");
+  if (q) q.addEventListener("input", () => { S.q = q.value; save(); document.getElementById("hlist").innerHTML = hiddenRows(); });
+}
+
+// ── 드래그한 단어로 거르기 ──
+const pop = document.getElementById("selpop");
+function hidePop() { pop.style.display = "none"; }
+document.addEventListener("mouseup", e => {
+  if (e.target.closest("#selpop")) return;
+  setTimeout(() => {
+    const sel = window.getSelection();
+    const w = sel.toString().trim().replace(/\s+/g, " ");
+    const inCard = sel.rangeCount && sel.anchorNode && sel.anchorNode.parentElement &&
+      sel.anchorNode.parentElement.closest(".card-body, .hrow");
+    if (!w || w.length < 2 || w.length > 20 || !inCard) { hidePop(); return; }
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    document.getElementById("pop-like").dataset.v = w;
+    document.getElementById("pop-ex").dataset.v = w;
+    document.getElementById("pop-like").textContent = S.liked.includes(w) ? "⭐ 이미 관심 키워드" : `⭐ '${w}' 관심 키워드로`;
+    document.getElementById("pop-ex").innerHTML = `🚫 제외 <b>${countWord(w)}개</b>`;
+    pop.style.display = "block";
+    pop.style.left = Math.min(Math.max(rect.left + rect.width / 2, 140), document.documentElement.clientWidth - 140) + window.scrollX + "px";
+    pop.style.top = Math.max(rect.top + window.scrollY - 46, 4) + "px";
+  }, 0);
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") hidePop(); });
+window.addEventListener("scroll", hidePop, true);
+
+S = loadState();
+if (MODE === "calendar") document.body.classList.add("calmode");
+render();
+window.addEventListener("storage", e => {
+  if (e.key !== KEY) return;
+  const sel = S.sel, scroll = window.scrollY;
+  S = loadState(); S.sel = sel; render(); window.scrollTo(0, scroll);
+});
+let rt; window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => MODE === "list" && drawTimeline(), 120); });
+</script>
+</body>
+</html>
