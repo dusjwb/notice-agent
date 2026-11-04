@@ -341,7 +341,7 @@ def failed_links(resp):
 
 
 MAX_LINKS = 20   # Gemini가 한 번에 읽을 수 있는 링크 수
-MAX_JUDGE = 50   # 목록만 보고 판단할 때 한 번에 판단하는 공지 수 (제목만이라 많아도 빨라요)
+MAX_JUDGE = 150  # 한 번에 판단하는 공지 수 상한 (게시판마다 최대 30개)
 
 
 def ai_find_posts(api_key, boards, today=None, log=None):
@@ -382,24 +382,31 @@ def ai_find_posts(api_key, boards, today=None, log=None):
     return posts[:MAX_LINKS], failed_links(resp)
 
 
-def _read_one_board(name, url, limit):
-    """게시판 목록 페이지 하나를 바로 읽어서 공지 제목·주소·게시일을 꺼내요 (AI 없이, 1~3초)"""
-    import re
+PER_BOARD = 30   # 게시판마다 최근 두 달 치 공지를 최대 몇 개까지 볼지
+MAX_PAGES = 4    # 게시판마다 최대 몇 페이지까지 넘겨 볼지
+
+
+def _get_soup(url):
     import requests
     from bs4 import BeautifulSoup
-    from urllib.parse import urljoin, urlparse
-
     resp = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0 (student project)"})
     resp.encoding = resp.apparent_encoding
     soup = BeautifulSoup(resp.text, "html.parser")
     for tag in soup(["script", "style", "nav", "footer", "header"]):
         tag.decompose()
+    return soup
+
+
+def _page_posts(soup, name, url):
+    """목록 페이지 하나에서 공지 글(제목·주소·게시일)을 페이지에 나온 순서대로 꺼내요"""
+    import re
+    from urllib.parse import urljoin, urlparse
     base = urlparse(url).path.rsplit("/index.do", 1)[0].rstrip("/")
     date_re = re.compile(r"(20\d{2})[.\-/]\s?(\d{1,2})[.\-/]\s?(\d{1,2})")
     found, seen = [], set()
     for a in soup.find_all("a", href=True):
         title = " ".join(a.get_text().split())
-        href = urljoin(url, a["href"])
+        href = urljoin(url, a["href"]).split("#")[0]
         path = urlparse(href).path
         if len(title) < 6 or not href.startswith("http") or href in seen:
             continue
@@ -410,21 +417,86 @@ def _read_one_board(name, url, limit):
         m = date_re.search(" ".join(row.get_text(" ").split())) if row else None
         posted = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}" if m else ""
         found.append({"board": name, "title": title[:120], "date": posted, "url": href})
-    # 최근 글이 먼저 오게 (게시일이 있으면 날짜순)
-    found.sort(key=lambda p: p["date"] or "", reverse=True)
-    return found[:limit]
+    return found
 
 
-def quick_find_posts(boards, per_board=10):
-    """1단계(빠른 길): 모든 게시판을 동시에 열어 목록을 읽어요. 못 읽은 게시판은 따로 돌려줘요."""
+def _page_urls(soup, url, n):
+    """n번째 페이지 주소 후보: 페이지에 있는 '2','3' 링크를 먼저, 없으면 흔한 주소 모양으로"""
+    import re
+    from urllib.parse import urljoin, urlparse, parse_qsl, urlencode, urlunparse
+    out = []
+    for a in soup.find_all("a", href=True):
+        if a.get_text(strip=True) == str(n):
+            h = a["href"]
+            if not h.lower().startswith("javascript") and h != "#":
+                out.append(urljoin(url, h))
+    u = urlparse(url)
+    q = dict(parse_qsl(u.query))
+    for key in ("page", "pageIndex", "currentPageNo", "pg", "pageNo"):
+        out.append(urlunparse(u._replace(query=urlencode({**q, key: n}))))
+    seen, uniq = set(), []
+    for x in out:
+        if x not in seen:
+            seen.add(x)
+            uniq.append(x)
+    return uniq[:7]
+
+
+def _recent(p, today):
+    from datetime import date as _d
+    try:
+        y, m, d = map(int, p["date"].split("-"))
+        return (today - _d(y, m, d)).days <= OLD_DAYS
+    except Exception:
+        return None   # 게시일 모름
+
+
+def _read_one_board(name, url, today):
+    """게시판 하나에서 최근 두 달 치 공지를 모아요 (AI 없이). 마지막 글도 두 달 안쪽이면 다음 페이지로."""
+    soup = _get_soup(url)
+    page = _page_posts(soup, name, url)
+    posts, seen = list(page), {p["url"] for p in page}
+    pattern = None   # 2페이지에서 통한 주소 모양을 3·4페이지에도 써요
+    for n in range(2, MAX_PAGES + 1):
+        if len([p for p in posts if _recent(p, today) is not False]) >= PER_BOARD:
+            break
+        if not page or _recent(page[-1], today) is not True:   # 마지막 글이 두 달 넘었거나 날짜를 모르면 그만
+            break
+        cands = [pattern.replace("__N__", str(n))] if pattern else _page_urls(soup, url, n)
+        page = []
+        for cu in cands:
+            try:
+                sp = _get_soup(cu)
+            except Exception:
+                continue
+            new = [p for p in _page_posts(sp, name, url) if p["url"] not in seen]
+            if new:
+                page, soup = new, sp
+                if not pattern:
+                    import re
+                    m = re.search(rf"([?&][A-Za-z]+=){n}(?=&|$)", cu)
+                    pattern = cu[:m.start()] + m.group(1) + "__N__" + cu[m.end():] if m else None
+                break
+        if not page:
+            break
+        posts += page
+        seen |= {p["url"] for p in page}
+    import re
+    posts = [p for p in posts if _recent(p, today) is not False or re.search(r"상시|수시", p["title"])]   # 두 달 넘은 글은 빼요
+    posts.sort(key=lambda p: p["date"] or "", reverse=True)
+    return posts[:PER_BOARD]
+
+
+def quick_find_posts(boards, today):
+    """1단계(빠른 길): 모든 게시판을 동시에 열어 최근 두 달 치 목록을 읽어요. 못 읽은 게시판은 따로 돌려줘요."""
     from concurrent.futures import ThreadPoolExecutor
     items = list(boards.items())[:MAX_LINKS]
     posts, failed = [], {}
     with ThreadPoolExecutor(max_workers=6) as ex:
-        futs = [(n, u, ex.submit(_read_one_board, n, u, per_board)) for n, u in items]
+        futs = [(n, u, ex.submit(_read_one_board, n, u, today)) for n, u in items]
         for n, u, f in futs:
             try:
-                got = f.result(timeout=15)
+                got = f.result(timeout=40)
             except Exception:
                 got = []
             if got:
@@ -465,7 +537,7 @@ def match_results(results, posts):
     return out
 
 
-TITLE_CHUNK = 17   # 제목 판단을 몇 개씩 나눠 보낼지 (한 번에 너무 많으면 AI가 일부만 답해요)
+TITLE_CHUNK = 25   # 제목 판단을 몇 개씩 나눠 보낼지 (한 번에 너무 많으면 AI가 일부만 답해요)
 
 
 def _judge_titles_once(api_key, profile, posts, today, log=None):
@@ -1215,9 +1287,9 @@ if page == "홈":
                     if len(boards) > MAX_LINKS:
                         st.write(f"⚠️ 게시판이 많아서 앞의 {MAX_LINKS}곳만 읽어요.")
                     n_b = min(len(boards), MAX_LINKS)
-                    st.write("⏱️ 예상 시간 약 20~60초")
+                    st.write("⏱️ 예상 시간 약 30~70초 (공지가 많을수록 조금 더 걸려요)")
                     step(3, f"🔍 게시판 {n_b}곳을 동시에 열어 최신 공지를 찾는 중...")
-                    posts, missed = quick_find_posts(dict(list(boards.items())[:MAX_LINKS]))
+                    posts, missed = quick_find_posts(dict(list(boards.items())[:MAX_LINKS]), today)
                     if missed:   # 바로 못 읽은 게시판만 Gemini가 직접 열어 읽어요
                         step(15, f"🔍 바로 못 읽은 게시판 {len(missed)}곳은 Gemini가 직접 열어 읽는 중...")
                         try:
