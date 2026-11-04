@@ -1221,9 +1221,10 @@ st.markdown("""<style>
   /* 위쪽 Streamlit 메뉴 줄(Deploy)에 제목이 가려지지 않게 충분히 띄우기 */
   .block-container, [data-testid="stMainBlockContainer"] { padding-top: 5.5rem !important; max-width: 1400px; }
   header[data-testid="stHeader"] { background: #F4F5F8; }
-  .app-title { font-size: 4.6rem; font-weight: 900; color: #15213B; margin: 0; line-height: 1.25;
-    font-family: "Noto Sans KR", sans-serif; -webkit-text-stroke: 2.5px #15213B; letter-spacing: 1px; }
-  .app-title b { font-weight: 900; }
+  .app-title, [data-testid="stMarkdownContainer"] p.app-title { font-size: 2.6rem !important; font-weight: 900 !important;
+    color: #15213B; margin: 0; line-height: 1.2 !important;
+    font-family: "Noto Sans KR", sans-serif !important; -webkit-text-stroke: 1.5px #15213B; letter-spacing: 1px; }
+  .app-title b { font-weight: 900 !important; font-size: inherit !important; }
   .app-sub { color: #6B7280; font-size: 1.05rem; margin: .2rem 0 0; }
 </style>""", unsafe_allow_html=True)
 
