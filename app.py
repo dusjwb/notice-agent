@@ -511,6 +511,25 @@ def ai_judge_titles(api_key, profile, posts, today, log=None):
 
 
 MAX_FILL = 8   # 추천된 공지 중 본문을 열어 볼 최대 개수
+OLD_DAYS = 60  # 게시일이 이보다 오래된 공지는 마감됐을 가능성이 높아서 미리 빼요 (상시·수시 모집은 남겨요)
+
+
+def drop_old_posts(posts, today):
+    """게시일이 두 달(OLD_DAYS)보다 오래된 공지를 빼요. 게시일을 모르거나 제목에 '상시·수시'가 있으면 남겨요."""
+    import re
+    from datetime import date as _d
+    keep, old = [], 0
+    for p in posts:
+        m = re.search(r"(20\d{2})\D{1,3}(\d{1,2})\D{1,3}(\d{1,2})", str(p.get("date") or ""))
+        try:
+            posted = _d(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+        except ValueError:
+            posted = None
+        if posted and (today - posted).days > OLD_DAYS and not re.search(r"상시|수시", p.get("title", "")):
+            old += 1
+            continue
+        keep.append(p)
+    return keep, old
 
 
 def ai_fill_details(api_key, profile, results, today, log=None):
@@ -1182,10 +1201,6 @@ if page == "홈":
                     help="같은 프로필·게시판으로 이미 판단한 결과가 있으면 바로 보여줘요. 새 공지를 반영하려면 다시 판단하세요.")
     c2.caption(source_note + (f"  ·  마지막 판단: {batch['saved_at']}" if batch else "  ·  아직 판단한 결과가 없어요."))
 
-    deep_read = False
-    if real_boards:
-        deep_read = c2.checkbox("공지 본문까지 읽기 (느림)", value=False,
-                                help="끄면 게시판 목록(제목·게시일)으로 빠르게 판단해요. 켜면 Gemini가 글을 하나하나 열어 읽어서 1분 넘게 걸릴 수 있어요.")
     if run and ready():
         import time as _time
         t0 = _time.time()
@@ -1196,7 +1211,7 @@ if page == "홈":
                     if len(boards) > MAX_LINKS:
                         st.write(f"⚠️ 게시판이 많아서 앞의 {MAX_LINKS}곳만 읽어요.")
                     n_b = min(len(boards), MAX_LINKS)
-                    st.write(f"⏱️ 예상 시간 약 {'40~90' if deep_read else '20~50'}초")
+                    st.write("⏱️ 예상 시간 약 20~60초")
                     st.write(f"1/3 🔍 게시판 {n_b}곳을 동시에 열어 최신 공지를 찾는 중...")
                     posts, missed = quick_find_posts(dict(list(boards.items())[:MAX_LINKS]))
                     if missed:   # 바로 못 읽은 게시판만 Gemini가 직접 열어 읽어요
@@ -1212,36 +1227,28 @@ if page == "홈":
                         posts += extra
                         for i, p in enumerate(posts):
                             p["id"] = str(i + 1)
+                    posts, n_old = drop_old_posts(posts, today)
+                    if n_old:
+                        st.write(f"🗓️ 올라온 지 두 달이 넘은 공지 {n_old}개는 마감됐을 가능성이 높아서 뺐어요.")
                     posts = posts[:MAX_JUDGE]
+                    for i, p in enumerate(posts):
+                        p["id"] = str(i + 1)
                     if not posts:
                         raise RuntimeError("게시판에서 공지를 찾지 못했어요. 게시판 링크가 맞는지 확인하거나, "
                                            "사이드바 스위치를 꺼서 예시 공지로 시연해 주세요.")
                     st.write(f"2/3 📄 최신 공지 {len(posts)}개를 찾았어요 ({_time.time() - t0:.0f}초)")
-                    results = []
-                    if deep_read:
-                        st.write(f"3/3 🤖 Gemini가 공지 {len(posts)}개의 본문을 직접 읽고 판단하는 중...")
+                    st.write(f"3/3 🤖 Gemini가 공지 {len(posts)}개를 판단하는 중...")
+                    results = ai_judge_titles(api_key, profile, posts, today, log=st.caption)
+                    need = [r for r in results if r.get("relevant")
+                            and str(r.get("deadline") or "").strip().lower() in ("", "null", "none", "없음")]
+                    if need:
+                        st.write(f"📄 추천 {sum(1 for r in results if r.get('relevant'))}개 중 마감일이 안 보이는 "
+                                 f"{min(len(need), MAX_FILL)}개만 본문을 열어 마감일·준비물을 채우는 중...")
                         try:
-                            results, bad = ai_judge_posts(api_key, profile, posts, today, log=st.caption)
-                            if bad:
-                                st.write(f"⚠️ 본문을 열지 못한 공지 {len(bad)}개는 제목만 보고 판단했어요.")
-                        except RuntimeError as e:
-                            if "오늘 무료" in str(e):
-                                raise
-                            st.write("↻ 본문 읽기가 오래 걸려서, 제목과 게시일로 빠르게 판단할게요...")
-                    else:
-                        st.write(f"3/3 🤖 Gemini가 공지 {len(posts)}개를 판단하는 중...")
-                    if len(results) < len(posts) // 2:
-                        results = ai_judge_titles(api_key, profile, posts, today, log=st.caption)
-                        need = [r for r in results if r.get("relevant")
-                                and str(r.get("deadline") or "").strip().lower() in ("", "null", "none", "없음")]
-                        if need:
-                            st.write(f"📄 추천 {sum(1 for r in results if r.get('relevant'))}개 중 마감일이 안 보이는 "
-                                     f"{min(len(need), MAX_FILL)}개만 본문을 열어 마감일·준비물을 채우는 중...")
-                            try:
-                                n = ai_fill_details(api_key, profile, results, today, log=st.caption)
-                                st.write(f"✅ 본문 {n}개 확인 ({_time.time() - t0:.0f}초)")
-                            except Exception:
-                                st.write("⏭️ 본문 읽기가 오래 걸려서 건너뛰고, 제목으로 판단한 결과를 보여줄게요.")
+                            n = ai_fill_details(api_key, profile, results, today, log=st.caption)
+                            st.write(f"✅ 본문 {n}개 확인 ({_time.time() - t0:.0f}초)")
+                        except Exception:
+                            st.write("⏭️ 본문 읽기가 오래 걸려서 건너뛰고, 제목으로 판단한 결과를 보여줄게요.")
                 else:
                     st.write(f"⏱️ 예상 시간 약 5~15초 · 🤖 공지 {len(notices)}개를 한 번에 판단하는 중...")
                     results = run_batch(api_key, profile, notices, today)
