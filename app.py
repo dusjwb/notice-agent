@@ -334,6 +334,7 @@ def failed_links(resp):
 
 
 MAX_LINKS = 20   # Gemini가 한 번에 읽을 수 있는 링크 수
+MAX_JUDGE = 50   # 목록만 보고 판단할 때 한 번에 판단하는 공지 수 (제목만이라 많아도 빨라요)
 
 
 def ai_find_posts(api_key, boards, today=None, log=None):
@@ -407,7 +408,7 @@ def _read_one_board(name, url, limit):
     return found[:limit]
 
 
-def quick_find_posts(boards, per_board=6):
+def quick_find_posts(boards, per_board=10):
     """1단계(빠른 길): 모든 게시판을 동시에 열어 목록을 읽어요. 못 읽은 게시판은 따로 돌려줘요."""
     from concurrent.futures import ThreadPoolExecutor
     items = list(boards.items())[:MAX_LINKS]
@@ -462,10 +463,58 @@ def ai_judge_titles(api_key, profile, posts, today, log=None):
     notices = [{"id": p["id"], "text": f"제목: {p['title']}\n게시판: {p['board']}\n게시일: {p.get('date', '')}\n주소: {p['url']}"}
                for p in posts]
     resp = ai_call(api_key, batch_prompt(profile, notices, today)
-                   + "\n게시판 목록(제목·게시일)만 보고 판단하는 거야. 제목에 마감일·기간이 보이면 deadline에 넣고, "
-                     "게시일이 오래됐거나 마감이 오늘보다 앞이면 relevant=false. 본문을 안 봤으니 checklist는 비워도 돼.\n",
+                   + "\n게시판 목록(제목·게시일)만 보고 판단하는 거야. 본문을 못 봤으니 너무 엄격하게 거르지 말고, "
+                     "사용자가 신청·참여할 가능성이 있거나 관심사와 관련 있으면 relevant=true로 해 (대상이 분명히 다를 때만 false). "
+                     "제목에 마감일·기간(~11/12 등)이 보이면 deadline에 넣고, 그 마감이 오늘보다 앞일 때만 마감 지남으로 relevant=false. "
+                     "checklist는 비워도 되고, relevant=false인 공지는 reason만 짧게 쓰고 나머지는 비워 (빠르게).\n",
                    json_mode=True, log=log, budget=40)
     return match_results(parse_json_list(resp.text), posts)
+
+
+MAX_FILL = 8   # 추천된 공지 중 본문을 열어 볼 최대 개수
+
+
+def ai_fill_details(api_key, profile, results, today, log=None):
+    """2단계(가볍게): 제목으로 추천된 공지 중 마감일이 안 보이는 것만 Gemini가 본문을 열어
+    마감일·대상·신청 방법·준비물을 채워요. 실패하면 제목 판단 결과를 그대로 둬요."""
+    no_dl = lambda r: str(r.get("deadline") or "").strip().lower() in ("", "null", "none", "없음")
+    todo = [r for r in results if r.get("relevant") and no_dl(r) and r.get("url")]
+    todo = sorted(todo, key=lambda r: -(r.get("score") or 0))[:MAX_FILL]
+    if not todo:
+        return 0
+    listing = "\n".join(f"[공지 {r['id']}] {r.get('title', '')} {r['url']}" for r in todo)
+    prompt = f"""오늘은 {today.isoformat()}이야. 아래 공지 주소를 직접 열어 본문을 읽고, 공지마다 정보를 채워줘.
+## 사용자 프로필
+{profile_text(profile)}
+## 규칙
+- deadline: 신청 마감일 YYYY-MM-DD, 본문에도 없으면 null
+- target: 지원 대상 한 줄, how_to_apply: 신청 방법 한 줄, checklist: 준비물 최대 3개 (본문에 적힌 것만)
+- summary: 2문장 이내
+- relevant: 본문을 보니 사용자가 대상이 아니거나 이미 마감이면 false, 아니면 true
+- 본문을 못 읽은 공지는 빼. 절대 지어내지 마.
+## 출력: JSON 배열만
+[{{"id": "공지번호", "relevant": true, "deadline": null, "target": "", "how_to_apply": "", "checklist": [], "summary": ""}}]
+## 공지
+{listing}"""
+    resp = ai_call(api_key, prompt, read_links=True, log=log, fast=True, budget=35)
+    by_id = {r["id"]: r for r in todo}
+    import re
+    filled = 0
+    for x in parse_json_list(resp.text):
+        m = re.search(r"\d+", str(x.get("id", "")))
+        r = by_id.get(m.group(0)) if m else None
+        if not r:
+            continue
+        for k in ("deadline", "target", "how_to_apply", "summary"):
+            if x.get(k) and str(x[k]).lower() != "null":
+                r[k] = x[k]
+        if isinstance(x.get("checklist"), list) and x["checklist"]:
+            r["checklist"] = x["checklist"][:3]
+        if x.get("relevant") is False:
+            r["relevant"] = False
+            r["reason"] = (r.get("reason") or "") + " (본문 확인: 대상 아님/마감)"
+        filled += 1
+    return filled
 
 
 def run_batch(api_key, profile, notices, today):
@@ -1109,7 +1158,7 @@ if page == "홈":
                     if len(boards) > MAX_LINKS:
                         st.write(f"⚠️ 게시판이 많아서 앞의 {MAX_LINKS}곳만 읽어요.")
                     n_b = min(len(boards), MAX_LINKS)
-                    st.write(f"⏱️ 예상 시간 약 {'40~90' if deep_read else '10~30'}초")
+                    st.write(f"⏱️ 예상 시간 약 {'40~90' if deep_read else '20~50'}초")
                     st.write(f"1/3 🔍 게시판 {n_b}곳을 동시에 열어 최신 공지를 찾는 중...")
                     posts, missed = quick_find_posts(dict(list(boards.items())[:MAX_LINKS]))
                     if missed:   # 바로 못 읽은 게시판만 Gemini가 직접 열어 읽어요
@@ -1125,7 +1174,7 @@ if page == "홈":
                         posts += extra
                         for i, p in enumerate(posts):
                             p["id"] = str(i + 1)
-                    posts = posts[:24]
+                    posts = posts[:MAX_JUDGE]
                     if not posts:
                         raise RuntimeError("게시판에서 공지를 찾지 못했어요. 게시판 링크가 맞는지 확인하거나, "
                                            "사이드바 스위치를 꺼서 예시 공지로 시연해 주세요.")
@@ -1145,6 +1194,16 @@ if page == "홈":
                         st.write(f"3/3 🤖 Gemini가 공지 {len(posts)}개를 판단하는 중...")
                     if len(results) < len(posts) // 2:
                         results = ai_judge_titles(api_key, profile, posts, today, log=st.caption)
+                        need = [r for r in results if r.get("relevant")
+                                and str(r.get("deadline") or "").strip().lower() in ("", "null", "none", "없음")]
+                        if need:
+                            st.write(f"📄 추천 {sum(1 for r in results if r.get('relevant'))}개 중 마감일이 안 보이는 "
+                                     f"{min(len(need), MAX_FILL)}개만 본문을 열어 마감일·준비물을 채우는 중...")
+                            try:
+                                n = ai_fill_details(api_key, profile, results, today, log=st.caption)
+                                st.write(f"✅ 본문 {n}개 확인 ({_time.time() - t0:.0f}초)")
+                            except Exception:
+                                st.write("⏭️ 본문 읽기가 오래 걸려서 건너뛰고, 제목으로 판단한 결과를 보여줄게요.")
                 else:
                     st.write(f"⏱️ 예상 시간 약 5~15초 · 🤖 공지 {len(notices)}개를 한 번에 판단하는 중...")
                     results = run_batch(api_key, profile, notices, today)
@@ -1155,7 +1214,7 @@ if page == "홈":
                          "profile": profile, "today": today.isoformat(),
                          "source": f"실제 게시판 {len(boards)}곳" if real_boards else "예시 공지"}
                 save_batch(MY_KEY, batch)
-                status.update(label=f"완료! 공지 {len(results)}개를 판단했어요 ({_time.time() - t0:.0f}초)",
+                status.update(label=f"완료! 공지 {len(results)}개를 읽고 {sum(1 for r in results if r.get('relevant'))}개를 추천했어요 ({_time.time() - t0:.0f}초) · 나머지는 숨김 창에",
                               state="complete", expanded=False)
             except Exception as e:
                 status.update(label="오류", state="error")
