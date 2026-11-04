@@ -482,7 +482,7 @@ def _judge_titles_once(api_key, profile, posts, today, log=None):
     return match_results(parse_json_list(resp.text), posts)
 
 
-def ai_judge_titles(api_key, profile, posts, today, log=None):
+def ai_judge_titles(api_key, profile, posts, today, log=None, progress=None):
     """제목·게시일만 보고 판단. 여러 묶음으로 나눠 보내고, AI가 빠뜨린 공지는 한 번 더 물어봐요."""
     results = []
     for i in range(0, len(posts), TITLE_CHUNK):
@@ -498,6 +498,8 @@ def ai_judge_titles(api_key, profile, posts, today, log=None):
                 raise
             break             # 일부라도 판단했으면 그 결과를 보여줘요
         results += got
+        if progress:
+            progress(min(i + TITLE_CHUNK, len(posts)), len(posts))
     # 그래도 답이 없는 공지는 숨김 창에서 볼 수 있게 남겨요
     done = {r["id"] for r in results}
     for p in posts:
@@ -1205,6 +1207,8 @@ if page == "홈":
         import time as _time
         t0 = _time.time()
         with st.status("AI가 일하는 중...", expanded=True) as status:
+            bar = st.progress(0, text="0%")
+            step = lambda pct, txt: bar.progress(min(100, int(pct)) / 100, text=f"**{int(pct)}%** · {txt}")
             try:
                 if notices is None:
                     # 실제 게시판: 게시판 목록은 동시에 바로 읽고(몇 초), 판단은 Gemini가 해요
@@ -1212,10 +1216,10 @@ if page == "홈":
                         st.write(f"⚠️ 게시판이 많아서 앞의 {MAX_LINKS}곳만 읽어요.")
                     n_b = min(len(boards), MAX_LINKS)
                     st.write("⏱️ 예상 시간 약 20~60초")
-                    st.write(f"1/3 🔍 게시판 {n_b}곳을 동시에 열어 최신 공지를 찾는 중...")
+                    step(3, f"🔍 게시판 {n_b}곳을 동시에 열어 최신 공지를 찾는 중...")
                     posts, missed = quick_find_posts(dict(list(boards.items())[:MAX_LINKS]))
                     if missed:   # 바로 못 읽은 게시판만 Gemini가 직접 열어 읽어요
-                        st.write(f"↻ 바로 못 읽은 게시판 {len(missed)}곳은 Gemini가 직접 열어 읽는 중...")
+                        step(15, f"🔍 바로 못 읽은 게시판 {len(missed)}곳은 Gemini가 직접 열어 읽는 중...")
                         try:
                             extra, bad = ai_find_posts(api_key, missed, today, log=st.caption)
                         except RuntimeError as e:
@@ -1227,30 +1231,28 @@ if page == "홈":
                         posts += extra
                         for i, p in enumerate(posts):
                             p["id"] = str(i + 1)
-                    posts, n_old = drop_old_posts(posts, today)
-                    if n_old:
-                        st.write(f"🗓️ 올라온 지 두 달이 넘은 공지 {n_old}개는 마감됐을 가능성이 높아서 뺐어요.")
+                    posts, _ = drop_old_posts(posts, today)
                     posts = posts[:MAX_JUDGE]
                     for i, p in enumerate(posts):
                         p["id"] = str(i + 1)
                     if not posts:
                         raise RuntimeError("게시판에서 공지를 찾지 못했어요. 게시판 링크가 맞는지 확인하거나, "
                                            "사이드바 스위치를 꺼서 예시 공지로 시연해 주세요.")
-                    st.write(f"2/3 📄 최신 공지 {len(posts)}개를 찾았어요 ({_time.time() - t0:.0f}초)")
-                    st.write(f"3/3 🤖 Gemini가 공지 {len(posts)}개를 판단하는 중...")
-                    results = ai_judge_titles(api_key, profile, posts, today, log=st.caption)
+                    step(25, f"🤖 최신 공지 {len(posts)}개를 찾았어요. Gemini가 판단하는 중...")
+                    results = ai_judge_titles(api_key, profile, posts, today, log=st.caption,
+                                              progress=lambda d, t: step(25 + 55 * d / t,
+                                                                         f"🤖 Gemini가 공지 {d}/{t}개 판단 완료..."))
                     need = [r for r in results if r.get("relevant")
                             and str(r.get("deadline") or "").strip().lower() in ("", "null", "none", "없음")]
                     if need:
-                        st.write(f"📄 추천 {sum(1 for r in results if r.get('relevant'))}개 중 마감일이 안 보이는 "
-                                 f"{min(len(need), MAX_FILL)}개만 본문을 열어 마감일·준비물을 채우는 중...")
+                        step(82, f"📄 마감일이 안 보이는 추천 공지 {min(len(need), MAX_FILL)}개의 본문을 확인하는 중...")
                         try:
-                            n = ai_fill_details(api_key, profile, results, today, log=st.caption)
-                            st.write(f"✅ 본문 {n}개 확인 ({_time.time() - t0:.0f}초)")
+                            ai_fill_details(api_key, profile, results, today, log=st.caption)
                         except Exception:
-                            st.write("⏭️ 본문 읽기가 오래 걸려서 건너뛰고, 제목으로 판단한 결과를 보여줄게요.")
+                            st.caption("⏭️ 본문 읽기가 오래 걸려서 건너뛰고, 제목으로 판단한 결과를 보여줄게요.")
                 else:
-                    st.write(f"⏱️ 예상 시간 약 5~15초 · 🤖 공지 {len(notices)}개를 한 번에 판단하는 중...")
+                    st.write("⏱️ 예상 시간 약 5~15초")
+                    step(30, f"🤖 Gemini가 공지 {len(notices)}개를 판단하는 중...")
                     results = run_batch(api_key, profile, notices, today)
                 if not results:
                     raise RuntimeError("AI 답을 읽지 못했어요. 잠시 뒤 다시 눌러 주세요.")
@@ -1259,6 +1261,7 @@ if page == "홈":
                          "profile": profile, "today": today.isoformat(),
                          "source": f"실제 게시판 {len(boards)}곳" if real_boards else "예시 공지"}
                 save_batch(MY_KEY, batch)
+                step(100, "완료!")
                 status.update(label=f"완료! 공지 {len(posts) if notices is None else len(notices)}개를 읽고 {sum(1 for r in results if r.get('relevant'))}개를 추천했어요 ({_time.time() - t0:.0f}초) · 나머지는 숨김 창에",
                               state="complete", expanded=False)
             except Exception as e:
