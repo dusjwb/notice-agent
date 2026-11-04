@@ -1217,10 +1217,13 @@ def parse_board_lines(text):
 # ──────────────────────────────────────────────
 st.set_page_config(page_title="공지콕", page_icon="📢", layout="wide")
 st.markdown("""<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@900&display=swap');
   /* 위쪽 Streamlit 메뉴 줄(Deploy)에 제목이 가려지지 않게 충분히 띄우기 */
   .block-container, [data-testid="stMainBlockContainer"] { padding-top: 5.5rem !important; max-width: 1400px; }
   header[data-testid="stHeader"] { background: #F4F5F8; }
-  .app-title { font-size: 2.3rem; font-weight: 900; color: #15213B; margin: 0; line-height: 1.25; }
+  .app-title { font-size: 4.6rem; font-weight: 900; color: #15213B; margin: 0; line-height: 1.25;
+    font-family: "Noto Sans KR", sans-serif; -webkit-text-stroke: 2.5px #15213B; letter-spacing: 1px; }
+  .app-title b { font-weight: 900; }
   .app-sub { color: #6B7280; font-size: 1.05rem; margin: .2rem 0 0; }
 </style>""", unsafe_allow_html=True)
 
@@ -1248,7 +1251,7 @@ with st.sidebar:
     st.divider()
     st.header("🌐 게시판")
     st.session_state.setdefault("board_text", "")
-    st.toggle("국민대 전자공학부 실제 게시판", key="use_kmu", on_change=toggle_kmu)
+    st.toggle("국민대 전자공학부 게시판", key="use_kmu", on_change=toggle_kmu)
     board_lines = st.text_area(
         "게시판 링크", key="board_text",
         placeholder="https://ee.kookmin.ac.kr/community/board/notice/\nhttps://...", height=130)
