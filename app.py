@@ -465,17 +465,49 @@ def match_results(results, posts):
     return out
 
 
-def ai_judge_titles(api_key, profile, posts, today, log=None):
-    """비상용: 본문을 열지 않고 제목·게시판만 보고 빠르게 판단 (링크 읽기가 실패했을 때)"""
-    notices = [{"id": p["id"], "text": f"제목: {p['title']}\n게시판: {p['board']}\n게시일: {p.get('date', '')}\n주소: {p['url']}"}
+TITLE_CHUNK = 17   # 제목 판단을 몇 개씩 나눠 보낼지 (한 번에 너무 많으면 AI가 일부만 답해요)
+
+
+def _judge_titles_once(api_key, profile, posts, today, log=None):
+    notices = [{"id": p["id"], "text": f"제목: {p['title']}\n게시판: {p['board']}\n게시일: {p.get('date', '')}"}
                for p in posts]
+    ids = ", ".join(p["id"] for p in posts)
     resp = ai_call(api_key, batch_prompt(profile, notices, today)
                    + "\n게시판 목록(제목·게시일)만 보고 판단하는 거야. 본문을 못 봤으니 너무 엄격하게 거르지 말고, "
                      "사용자가 신청·참여할 가능성이 있거나 관심사와 관련 있으면 relevant=true로 해 (대상이 분명히 다를 때만 false). "
                      "제목에 마감일·기간(~11/12 등)이 보이면 deadline에 넣고, 그 마감이 오늘보다 앞일 때만 마감 지남으로 relevant=false. "
-                     "checklist는 비워도 되고, relevant=false인 공지는 reason만 짧게 쓰고 나머지는 비워 (빠르게).\n",
+                     "checklist는 비워도 되고, relevant=false인 공지는 reason만 짧게 쓰고 나머지는 비워 (빠르게).\n"
+                     f"**반드시 공지 {len(posts)}개 모두(id: {ids}) 하나도 빠짐없이 배열에 넣어.**\n",
                    json_mode=True, log=log, budget=40)
     return match_results(parse_json_list(resp.text), posts)
+
+
+def ai_judge_titles(api_key, profile, posts, today, log=None):
+    """제목·게시일만 보고 판단. 여러 묶음으로 나눠 보내고, AI가 빠뜨린 공지는 한 번 더 물어봐요."""
+    results = []
+    for i in range(0, len(posts), TITLE_CHUNK):
+        chunk = posts[i:i + TITLE_CHUNK]
+        try:
+            got = _judge_titles_once(api_key, profile, chunk, today, log)
+            done = {r["id"] for r in got}
+            missing = [p for p in chunk if p["id"] not in done]
+            if missing:   # 빠뜨린 공지만 다시
+                got += _judge_titles_once(api_key, profile, missing, today, log)
+        except RuntimeError:
+            if not results:   # 처음부터 안 되면 오류를 보여줘요
+                raise
+            break             # 일부라도 판단했으면 그 결과를 보여줘요
+        results += got
+    # 그래도 답이 없는 공지는 숨김 창에서 볼 수 있게 남겨요
+    done = {r["id"] for r in results}
+    for p in posts:
+        if p["id"] not in done:
+            results.append({"id": p["id"], "title": p["title"], "url": p["url"], "board": p["board"],
+                            "relevant": False, "score": 0, "category": "기타", "short": p["title"][:6], "kind": "",
+                            "reason": "AI가 판단하지 못했어요 (다시 판단하면 바뀔 수 있어요)", "summary": "",
+                            "deadline": None, "target": "", "how_to_apply": "", "checklist": []})
+    order = {p["id"]: i for i, p in enumerate(posts)}
+    return sorted(results, key=lambda r: order.get(r["id"], 0))
 
 
 MAX_FILL = 8   # 추천된 공지 중 본문을 열어 볼 최대 개수
@@ -1220,7 +1252,7 @@ if page == "홈":
                          "profile": profile, "today": today.isoformat(),
                          "source": f"실제 게시판 {len(boards)}곳" if real_boards else "예시 공지"}
                 save_batch(MY_KEY, batch)
-                status.update(label=f"완료! 공지 {len(results)}개를 읽고 {sum(1 for r in results if r.get('relevant'))}개를 추천했어요 ({_time.time() - t0:.0f}초) · 나머지는 숨김 창에",
+                status.update(label=f"완료! 공지 {len(posts) if notices is None else len(notices)}개를 읽고 {sum(1 for r in results if r.get('relevant'))}개를 추천했어요 ({_time.time() - t0:.0f}초) · 나머지는 숨김 창에",
                               state="complete", expanded=False)
             except Exception as e:
                 status.update(label="오류", state="error")
