@@ -540,38 +540,93 @@ def match_results(results, posts):
 TITLE_CHUNK = 25   # 제목 판단을 몇 개씩 나눠 보낼지 (한 번에 너무 많으면 AI가 일부만 답해요)
 
 
+def _title_prompt(profile, posts, today):
+    """제목 판단용 짧은 프롬프트. 답도 짧게 받아서 빨라요 (요약·준비물은 나중에 본문에서)."""
+    lines = "\n".join(f"[{p['id']}] {p['title']} | {p['board']} | {p.get('date', '')}" for p in posts)
+    return f"""너는 대학생의 학교 공지를 골라주는 비서야. 오늘은 {today.isoformat()}이야.
+## 사용자 프로필
+{profile_text(profile)}
+## 규칙 (게시판 목록의 제목·게시판·게시일만 보고 판단)
+- relevant: 사용자가 신청·참여할 수 있고 관심사·진로와 관련 있으면 true. 대상이 분명히 다르거나(다른 학과·학년 전용 등) 신청할 게 없는 단순 안내·결과 발표면 false.
+- score: 관련도 0~100
+- category: {TAG_SET} 중 하나
+- short: 6자 이내 짧은 이름, kind: 공지 유형 2~6자
+- reason: 프로필을 근거로 한 문장 30자 이내
+- deadline: 제목에 마감일·기간(~11/12 등)이 보이면 YYYY-MM-DD, 없으면 null. 마감이 오늘보다 앞이면 relevant=false.
+## 출력: JSON 배열만. 공지 {len(posts)}개 모두 빠짐없이.
+[{{"id":"번호","relevant":true,"score":0,"category":"","short":"","kind":"","reason":"","deadline":null}}]
+## 공지
+{lines}"""
+
+
 def _judge_titles_once(api_key, profile, posts, today, log=None):
-    notices = [{"id": p["id"], "text": f"제목: {p['title']}\n게시판: {p['board']}\n게시일: {p.get('date', '')}"}
-               for p in posts]
-    ids = ", ".join(p["id"] for p in posts)
-    resp = ai_call(api_key, batch_prompt(profile, notices, today)
-                   + "\n게시판 목록(제목·게시일)만 보고 판단하는 거야. 본문을 못 봤으니 너무 엄격하게 거르지 말고, "
-                     "사용자가 신청·참여할 가능성이 있거나 관심사와 관련 있으면 relevant=true로 해 (대상이 분명히 다를 때만 false). "
-                     "제목에 마감일·기간(~11/12 등)이 보이면 deadline에 넣고, 그 마감이 오늘보다 앞일 때만 마감 지남으로 relevant=false. "
-                     "checklist는 비워도 되고, relevant=false인 공지는 reason만 짧게 쓰고 나머지는 비워 (빠르게).\n"
-                     f"**반드시 공지 {len(posts)}개 모두(id: {ids}) 하나도 빠짐없이 배열에 넣어.**\n",
-                   json_mode=True, log=log, budget=40)
+    resp = ai_call(api_key, _title_prompt(profile, posts, today), json_mode=True, log=log, fast=True, budget=40)
     return match_results(parse_json_list(resp.text), posts)
 
 
+def _parallel_texts(api_key, prompts, on_done=None):
+    """여러 프롬프트를 동시에 Gemini에 보내요. 스레드 안에서는 st를 쓰지 않아요."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from google.genai import types
+    client = get_client(api_key)
+    models = model_list(client)
+    models = sorted(models, key=lambda m: ("lite" not in m))[:3]
+    base = {"temperature": 0.2, "response_mime_type": "application/json"}
+    no_think = st.session_state.get("no_think")
+
+    def work(prompt):
+        for m in models:
+            for think in ([False] if no_think else [True, False]):
+                cfg = types.GenerateContentConfig(**base, **({"thinking_config": types.ThinkingConfig(thinking_budget=0)} if think else {}))
+                try:
+                    return client.models.generate_content(model=m, contents=prompt, config=cfg).text
+                except Exception as e:
+                    if think and "thinking" in str(e).lower():
+                        continue   # 생각 끄기를 못 하는 모델 → 기본 설정으로 다시
+                    break          # 한도·서버 붐빔 등 → 다음 모델
+        return None
+
+    out = [None] * len(prompts)
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(work, p): i for i, p in enumerate(prompts)}
+        for f in as_completed(futs):
+            try:
+                out[futs[f]] = f.result()
+            except Exception:
+                pass
+            if on_done:
+                on_done()
+    return out
+
+
 def ai_judge_titles(api_key, profile, posts, today, log=None, progress=None):
-    """제목·게시일만 보고 판단. 여러 묶음으로 나눠 보내고, AI가 빠뜨린 공지는 한 번 더 물어봐요."""
-    results = []
-    for i in range(0, len(posts), TITLE_CHUNK):
-        chunk = posts[i:i + TITLE_CHUNK]
-        try:
-            got = _judge_titles_once(api_key, profile, chunk, today, log)
-            done = {r["id"] for r in got}
-            missing = [p for p in chunk if p["id"] not in done]
-            if missing:   # 빠뜨린 공지만 다시
-                got += _judge_titles_once(api_key, profile, missing, today, log)
-        except RuntimeError:
-            if not results:   # 처음부터 안 되면 오류를 보여줘요
-                raise
-            break             # 일부라도 판단했으면 그 결과를 보여줘요
-        results += got
+    """제목·게시일만 보고 판단. 묶음을 동시에 보내고, AI가 빠뜨린 공지만 한 번 더 물어봐요."""
+    chunks = [posts[i:i + TITLE_CHUNK] for i in range(0, len(posts), TITLE_CHUNK)]
+    done_n = [0]
+
+    def tick():
+        done_n[0] += 1
         if progress:
-            progress(min(i + TITLE_CHUNK, len(posts)), len(posts))
+            progress(min(done_n[0] * TITLE_CHUNK, len(posts)), len(posts))
+
+    texts = _parallel_texts(api_key, [_title_prompt(profile, c, today) for c in chunks], tick)
+    results = []
+    for c, t in zip(chunks, texts):
+        if t:
+            results += match_results(parse_json_list(t), c)
+    missing = [p for p in posts if p["id"] not in {r["id"] for r in results}]
+    if missing:   # 빠졌거나 실패한 공지만 다시 (한 번)
+        try:
+            results += _judge_titles_once(api_key, profile, missing[:TITLE_CHUNK * 2], today, log)
+        except RuntimeError:
+            if not results:
+                raise
+    # 마감이 이미 지난 공지는 추천에서 빼요 (화면 숫자와 맞게)
+    for r in results:
+        dl = str(r.get("deadline") or "")
+        if r.get("relevant") and len(dl) == 10 and dl < today.isoformat():
+            r["relevant"] = False
+            r["reason"] = (r.get("reason") or "") + " (마감 지남)"
     # 그래도 답이 없는 공지는 숨김 창에서 볼 수 있게 남겨요
     done = {r["id"] for r in results}
     for p in posts:
@@ -606,6 +661,23 @@ def drop_old_posts(posts, today):
     return keep, old
 
 
+def _body_text(url, limit=2500):
+    """공지 글 페이지에서 본문 글자만 꺼내요 (메뉴·머리말 빼고, 가장 긴 본문 영역)"""
+    soup = _get_soup(url)
+    best = None
+    for sel in (".view_cont", ".view-con", ".board_view", ".bbs_view", ".board-view", "article",
+                "div[class*=view]", "td.content", "#content", "main", ".content", "div[class*=cont]"):
+        for t in soup.select(sel):
+            if len(t.get_text(" ", strip=True)) >= 150:   # 본문처럼 충분히 긴 첫 영역
+                best = t
+                break
+        if best:
+            break
+    best = best or soup.body or soup
+    text = " ".join(best.get_text(" ").split())
+    return text[:limit]
+
+
 def ai_fill_details(api_key, profile, results, today, log=None):
     """2단계(가볍게): 제목으로 추천된 공지 중 마감일이 안 보이는 것만 Gemini가 본문을 열어
     마감일·대상·신청 방법·준비물을 채워요. 실패하면 제목 판단 결과를 그대로 둬요."""
@@ -614,8 +686,25 @@ def ai_fill_details(api_key, profile, results, today, log=None):
     todo = sorted(todo, key=lambda r: -(r.get("score") or 0))[:MAX_FILL]
     if not todo:
         return 0
-    listing = "\n".join(f"[공지 {r['id']}] {r.get('title', '')} {r['url']}" for r in todo)
-    prompt = f"""오늘은 {today.isoformat()}이야. 아래 공지 주소를 직접 열어 본문을 읽고, 공지마다 정보를 채워줘.
+    # 본문은 코드가 동시에 열어서 글자만 넘겨요 (Gemini가 링크를 하나씩 여는 것보다 훨씬 빨라요)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futs = [(r, ex.submit(_body_text, r["url"])) for r in todo]
+        bodies = {}
+        for r, f in futs:
+            try:
+                bodies[r["id"]] = f.result(timeout=12)
+            except Exception:
+                pass
+    got_text = [r for r in todo if bodies.get(r["id"])]
+    if got_text:
+        listing = "\n\n".join(f"[공지 {r['id']}] {r.get('title', '')}\n{bodies[r['id']]}" for r in got_text)
+        how = "아래 공지 본문을 읽고"
+        todo = got_text
+    else:   # 코드로 못 열었으면 예전처럼 Gemini가 링크를 직접 열어요
+        listing = "\n".join(f"[공지 {r['id']}] {r.get('title', '')} {r['url']}" for r in todo)
+        how = "아래 공지 주소를 직접 열어 본문을 읽고"
+    prompt = f"""오늘은 {today.isoformat()}이야. {how}, 공지마다 정보를 채워줘.
 ## 사용자 프로필
 {profile_text(profile)}
 ## 규칙
@@ -628,7 +717,7 @@ def ai_fill_details(api_key, profile, results, today, log=None):
 [{{"id": "공지번호", "relevant": true, "deadline": null, "target": "", "how_to_apply": "", "checklist": [], "summary": ""}}]
 ## 공지
 {listing}"""
-    resp = ai_call(api_key, prompt, read_links=True, log=log, fast=True, budget=35)
+    resp = ai_call(api_key, prompt, read_links=not got_text, json_mode=bool(got_text), log=log, fast=True, budget=35)
     by_id = {r["id"]: r for r in todo}
     import re
     filled = 0
