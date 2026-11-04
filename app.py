@@ -1341,17 +1341,6 @@ if page == "홈":
                 st.error(str(e))
 
     if batch and batch.get("results"):
-        with st.expander("📥 제출용 HTML 받기 (어느 컴퓨터에서나 더블클릭으로 열리는 파일)"):
-            if not batch.get("profile"):
-                batch = dict(batch, profile=profile, today=today.isoformat())
-            entries = export_entries(batch, today)
-            st.markdown("이 HTML 파일 하나에 **판단 결과가 담겨서**, 설치·인터넷·API 키 없이 열려요. "
-                        "홈·캘린더·기억·숨김 화면과 ☆·키워드·캘린더 받기가 모두 작동해요.")
-            st.markdown("**담길 프로필** (발표 중 위쪽에서 골라 바꿀 수 있어요)\n"
-                        + "\n".join(f"- {e['label']} · 공지 {len(e['results'])}개" for e in entries))
-            st.caption("다른 프로필도 넣고 싶으면 '✏️ 프로필 수정'으로 바꾼 뒤 'AI로 공지 판단하기'를 한 번 더 누르고 다시 받으세요.")
-            st.download_button("📥 공지비서_Agent.html 받기", standalone_html(entries), file_name="공지비서_Agent.html",
-                               mime="text/html", type="primary", use_container_width=True)
         show_dashboard(batch["results"], today, interests, all_tags=str(batch.get("source", "")).startswith("실제"))
         st.caption("☆ 중요 표시, 관심 없음, 관심 키워드, 제외 키워드 설정은 이 브라우저에 저장돼요. 숨긴 공지는 위쪽 '숨김'에서 볼 수 있어요.")
     else:
