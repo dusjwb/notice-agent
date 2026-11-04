@@ -184,6 +184,20 @@
   .lk button { border: 0; background: none; color: inherit; padding: 0 0 0 4px; font-size: 14px; }
   .liked-chip { flex: none; background: #A9CBFF; color: #111827; border-radius: 7px; padding: 2px 8px; font-size: 12px; font-weight: 700; }
   .ex-row input:disabled, .ex-row button:disabled { opacity: .45; cursor: not-allowed; }
+  .mem-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  @media (max-width: 760px) { .mem-grid { grid-template-columns: minmax(0, 1fr); } }
+  .mem-grid .panel { padding: 18px 20px; }
+  .wipe { margin-top: 20px; border: 1.5px solid #E8B4A8; background: #fff; color: #A3301A; border-radius: 10px; padding: 9px 16px; font-size: 14px; font-weight: 700; }
+  .wipe.on, .wipe:hover { background: #FBE7E2; }
+  body.standalone { max-width: 1400px; margin: 0 auto; padding: 28px 32px 60px; }
+  .sa-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
+  .sa-head h1 { margin: 0; font-size: 30px; font-weight: 800; }
+  .sa-head p { margin: 4px 0 0; color: var(--muted); font-size: 15px; }
+  .sa-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .sa-prof { font-size: 14px; color: var(--muted); }
+  .sa-prof select { margin-left: 6px; border: 1.5px solid var(--line); border-radius: 9px; padding: 6px 10px; font-size: 14px; background: #fff; color: var(--ink); }
+  .sa-nav button { padding: 8px 18px; font-size: 15px; }
+  @media (max-width: 640px) { body.standalone { padding: 16px; } .sa-head h1 { font-size: 22px; } }
   .hid-head h2 { margin: 0; font-size: 26px; font-weight: 800; }
   .hid-head { margin-bottom: 16px; }
   body.hidmode { padding: 6px 4px 40px; }
@@ -202,14 +216,20 @@
 <div id="app"></div>
 <div id="selpop"><button data-act="likeword" id="pop-like"></button><button data-act="exword" id="pop-ex"></button></div>
 <script>
-const DATA = /*__DATA__*/{"today": "2026-10-30", "interests": [], "results": []};
-const MODE = /*__MODE__*/"list";   // "list" = 메인 화면, "calendar" = 캘린더만 있는 창
+const RAW = /*__DATA__*/{"today": "2026-10-30", "interests": [], "results": []};
+// 제출용 HTML(standalone)은 여러 프로필의 판단 결과를 담고, 위쪽 메뉴로 화면을 바꿔요
+const STANDALONE = !!RAW.standalone;
+const PROFILES = RAW.profiles || [RAW];
+let PIDX = 0;
+try { PIDX = Math.min(Number(localStorage.getItem("notice-profile-idx") || 0), PROFILES.length - 1); } catch (e) {}
+let DATA = PROFILES[PIDX];
+let MODE = /*__MODE__*/"list";   // "list" = 메인 화면, "calendar" = 캘린더만 있는 창
 const SRC = "<!doctype html>\n" + document.documentElement.outerHTML;  // 새 창을 열 때 쓰는 이 화면의 원본
 
 const TAGS = ["취업", "자격증", "장학", "연구", "대외활동", "학사", "행사", "기타"];
-const KEY = "notice-dashboard-v1";
+let KEY = "notice-dashboard-v1" + (STANDALONE ? "-p" + PIDX : "");
 const DAY = 864e5;
-const today = new Date(DATA.today + "T00:00:00");
+let today = new Date(DATA.today + "T00:00:00");
 
 // ── 저장된 설정 불러오기 (이 브라우저에만 저장돼요) ──
 function loadState() {
@@ -308,9 +328,27 @@ function lists() {
 }
 
 // ── 화면 그리기 ──
+function standaloneHeader() {
+  const pages = [["list", "홈"], ["calendar", "캘린더"], ["memory", "기억"], ["hidden", "숨김"]];
+  return `<header class="sa-head">
+    <div><h1>📢 학교 공지 맞춤 비서 Agent</h1>
+      <p>${esc(DATA.label || "")} · 기준일 ${today.getMonth() + 1}/${today.getDate()}</p></div>
+    <div class="sa-right">
+      ${PROFILES.length > 1 ? `<label class="sa-prof">프로필 <select id="profsel">${PROFILES.map((p, i) =>
+        `<option value="${i}" ${i === PIDX ? "selected" : ""}>${esc(p.label)}</option>`).join("")}</select></label>` : ""}
+      <div class="seg sa-nav">${pages.map(([m, t]) => `<button data-act="page" data-v="${m}" class="${MODE === m ? "on" : ""}">${t}</button>`).join("")}</div>
+    </div></header>`;
+}
+function switchProfile(i) {
+  PIDX = i; DATA = PROFILES[i]; today = new Date(DATA.today + "T00:00:00");
+  KEY = "notice-dashboard-v1" + (STANDALONE ? "-p" + PIDX : "");
+  try { localStorage.setItem("notice-profile-idx", String(i)); } catch (e) {}
+  S = loadState(); render();
+}
 function render() {
   const app = document.getElementById("app");
-  app.innerHTML = MODE === "calendar" ? calendarPage() : MODE === "hidden" ? hiddenPage() : listView();
+  document.body.classList.toggle("calmode", MODE === "calendar" && !STANDALONE);
+  app.innerHTML = (STANDALONE ? standaloneHeader() : "") + (MODE === "calendar" ? calendarPage() : MODE === "hidden" ? hiddenPage() : MODE === "memory" ? memoryPage() : listView());
   if (MODE === "list") drawTimeline();
   bind();
 }
@@ -470,6 +508,37 @@ function drawTimeline() {
     lab.style.left = left + "px";
     lab.style.top = (lvl === 0 ? 4 : 30) + "px";
   });
+}
+
+// ── 기억 화면: 이 브라우저에 저장된 내 설정 ──
+let confirmWipe = false;
+function memoryPage() {
+  const title = id => (DATA.results.find(r => r.id === id) || {}).title;
+  const starred = S.starred.map(id => [id, title(id)]).filter(x => x[1]);
+  const disliked = S.disliked.map(id => [id, title(id)]).filter(x => x[1]);
+  const chips = (list, cls, act) => list.length ? list.map(k =>
+    `<span class="${cls}">${esc(k)}<button data-act="${act}" data-v="${esc(k)}" aria-label="${esc(k)} 지우기">✕</button></span>`).join("")
+    : `<span class="note" style="margin:0">아직 없어요</span>`;
+  const rows = (list, btn, act) => list.length ? list.map(([id, t]) =>
+    `<div class="hrow"><span class="t">${esc(t)}</span><button class="again" data-act="${act}" data-id="${id}">${btn}</button></div>`).join("")
+    : `<p class="note">아직 없어요</p>`;
+  return `
+  <div class="hid-head">
+    <h2>내 기억</h2>
+    <p class="note" style="margin:6px 0 0">홈에서 고른 설정이 <b>이 브라우저에만</b> 저장돼 있어요. 같은 링크로 들어온 다른 사람과는 공유되지 않아요.</p>
+  </div>
+  <div class="mem-grid">
+    <div class="panel"><h3>⭐ 관심 키워드 <span class="cnt">${S.liked.length}/${MAX_KW}</span></h3>
+      <div class="ex-chips" style="margin-top:0">${chips(S.liked, "lk", "likedel")}</div></div>
+    <div class="panel"><h3>🚫 제외 키워드 <span class="cnt">${S.excluded.length}/${MAX_KW}</span></h3>
+      <div class="ex-chips" style="margin-top:0">${chips(S.excluded, "ex", "exdel")}</div></div>
+    <div class="panel"><h3>🏷️ 켜 둔 관심 분류</h3>
+      <div class="tags">${S.tagsOn.map(t => `<span class="tg on">✓ ${esc(t)}</span>`).join("") || `<span class="note" style="margin:0">없어요</span>`}</div></div>
+    <div class="panel"><h3>★ 중요 표시한 공지 ${starred.length}개</h3>${rows(starred, "☆ 해제", "star")}</div>
+    <div class="panel"><h3>🙅 '관심 없음'을 누른 공지 ${disliked.length}개</h3>${rows(disliked, "다시 보기", "reveal")}</div>
+  </div>
+  <button class="wipe ${confirmWipe ? "on" : ""}" data-act="wipe">${confirmWipe ? "정말 지울까요? 한 번 더 누르면 모두 지워져요" : "🗑️ 이 브라우저의 기억 모두 지우기"}</button>
+  ${flash.revealed ? `<p class="toast">${esc(flash.revealed)}</p>` : ""}`;
 }
 
 // ── 숨김 화면: 필터로 숨긴 공지 모아보기 ──
@@ -689,6 +758,13 @@ document.addEventListener("click", e => {
       hidePop(); window.getSelection().removeAllRanges();
     }
     else if (act === "likeword") { addKw("liked", v); hidePop(); window.getSelection().removeAllRanges(); }
+    else if (act === "wipe") {
+      if (!confirmWipe) { confirmWipe = true; render(); setTimeout(() => { confirmWipe = false; render(); }, 4000); return; }
+      confirmWipe = false;
+      try { localStorage.removeItem(KEY); } catch (e) {}
+      S = loadState(); flash.revealed = "이 브라우저의 기억을 모두 지웠어요.";
+    }
+    else if (act === "page") { MODE = v; render(); window.scrollTo(0, 0); return; }
     else if (act === "calprev") S.calOffset -= 1;
     else if (act === "calnext") S.calOffset += 1;
     else if (act === "calnow") S.calOffset = 0;
@@ -729,8 +805,9 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") hidePop(); }
 window.addEventListener("scroll", hidePop, true);
 
 S = loadState();
-if (MODE === "calendar") document.body.classList.add("calmode");
+if (STANDALONE) { document.body.classList.add("standalone"); document.title = "학교 공지 맞춤 비서 Agent"; }
 render();
+document.addEventListener("change", e => { if (e.target.id === "profsel") switchProfile(Number(e.target.value)); });
 window.addEventListener("storage", e => {
   if (e.key !== KEY) return;
   const sel = S.sel, scroll = window.scrollY;

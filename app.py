@@ -180,29 +180,24 @@ def summarize_tool(name, args, result):
 # ──────────────────────────────────────────────
 # 홈 모드 (전체 공지를 AI가 한 번에 판단 → 대시보드로 표시)
 # ──────────────────────────────────────────────
-BATCH_FILE = "last_batch.json"   # 판단 결과 저장 (새로고침·재실행해도 유지)
+CACHE_DIR = "cache"   # 판단 결과를 '프로필 + 게시판(공지)' 조합마다 따로 저장 → 접속한 사람마다 자기 결과만 봐요
 TAG_SET = "취업|자격증|장학|연구|대외활동|학사|행사|기타"
 
 
 def batch_prompt(profile, notices, today):
-    mem = load_memory()
     notice_text = "\n\n".join(f"[공지 {n['id']}]\n{n['text']}" for n in notices)
     return f"""너는 대학생의 학교 공지를 대신 읽어주는 비서야. 오늘은 {today.isoformat()}이야.
 
 ## 사용자 프로필
 {profile_text(profile)}
 
-## 사용자 기억
-- 좋아한 공지: {mem['likes'] or '없음'}
-- 싫어한 공지: {mem['dislikes'] or '없음'}
-- 메모: {mem['notes'] or '없음'}
 
 ## 판단 규칙
 1. 지원 대상에 사용자가 해당하는지 먼저 확인. 학과 이름이 없어도 의미로 판단해
    (예: '공과대학 재학생', '전기·전자 계열'은 전자공학부 포함). 대상이 아니면 relevant=false.
 2. 관심사 관련도 0~100점. 신청할 게 없는 안내성 공지는 relevant=false.
-3. 싫어한 공지와 비슷하면 점수를 낮추고 이유에 언급해.
-4. reason은 프로필·기억을 근거로 한 문장, 40자 이내. 공지에 없는 내용은 지어내지 마.
+3. 사용자 추가 정보에 적힌 희망 진로·관심을 점수에 반영해.
+4. reason은 프로필을 근거로 한 문장, 40자 이내. 공지에 없는 내용은 지어내지 마.
 5. deadline은 신청 마감일 YYYY-MM-DD, 없으면 null.
 6. category는 {TAG_SET} 중 하나.
 7. short는 타임라인에 쓸 6자 이내 짧은 이름 (예: 채용박람회, 전기기사, 장학생).
@@ -235,11 +230,70 @@ def run_batch(api_key, profile, notices, today):
     return results
 
 
-def load_batch():
+def batch_key(profile, boards, notice_text):
+    """프로필과 공지 출처로 만든 열쇠. 같은 프로필·같은 게시판이면 같은 결과를 다시 써요 (AI 절약)."""
+    import hashlib
+    src = sorted(boards.values()) if boards else (notice_text or "")
+    raw = json.dumps([profile["major"], profile["grade"], sorted(profile["interests"]), profile["extra"], src],
+                     ensure_ascii=False)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def load_batch(key):
+    """먼저 이 접속(세션)의 결과, 없으면 같은 열쇠로 저장해 둔 결과를 찾아요."""
+    if st.session_state.get("batch_key") == key and st.session_state.get("batch"):
+        return st.session_state["batch"]
     try:
-        return json.load(open(BATCH_FILE, encoding="utf-8"))
+        b = json.load(open(os.path.join(CACHE_DIR, key + ".json"), encoding="utf-8"))
+        st.session_state.update(batch=b, batch_key=key)
+        return b
     except Exception:
         return None
+
+
+def save_batch(key, batch):
+    st.session_state.update(batch=batch, batch_key=key)
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        json.dump(batch, open(os.path.join(CACHE_DIR, key + ".json"), "w", encoding="utf-8"), ensure_ascii=False)
+    except Exception:
+        pass  # 저장이 안 돼도 이 접속에서는 계속 보여요
+
+
+def profile_label(p):
+    return f"{p.get('major', '')} {p.get('grade', '')} · {', '.join(p.get('interests', [])) or '-'}"
+
+
+def standalone_html(entries):
+    """제출용: 판단 결과를 담은 HTML 파일 하나 (서버·인터넷·API 키 없이 더블클릭으로 열림)"""
+    tpl = open("dashboard.html", encoding="utf-8").read()
+    data = json.dumps({"standalone": True, "profiles": entries}, ensure_ascii=False).replace("</", "<\\/")
+    return tpl.replace('/*__DATA__*/{"today": "2026-10-30", "interests": [], "results": []}', data)
+
+
+def export_entries(current_batch, today):
+    """지금 결과 + 이 컴퓨터에 저장된 다른 프로필 결과(같은 프로필은 최신 1개)"""
+    items = []
+    if current_batch and current_batch.get("profile"):
+        items.append(current_batch)
+    try:
+        files = sorted((os.path.join(CACHE_DIR, f) for f in os.listdir(CACHE_DIR) if f.endswith(".json")),
+                       key=os.path.getmtime, reverse=True)
+        for f in files:
+            b = json.load(open(f, encoding="utf-8"))
+            if b.get("profile") and b.get("results"):
+                items.append(b)
+    except Exception:
+        pass
+    seen, out = set(), []
+    for b in items:
+        lab = profile_label(b["profile"])
+        if lab in seen:
+            continue
+        seen.add(lab)
+        out.append({"label": lab, "today": b.get("today") or today.isoformat(),
+                    "interests": b["profile"].get("interests", []), "results": b["results"]})
+    return out
 
 
 def show_dashboard(results, today, interests, height=1450, mode="list"):
@@ -249,7 +303,7 @@ def show_dashboard(results, today, interests, height=1450, mode="list"):
     data = json.dumps({"today": today.isoformat(), "interests": interests, "results": results},
                       ensure_ascii=False).replace("</", "<\\/")
     html = tpl.replace('/*__DATA__*/{"today": "2026-10-30", "interests": [], "results": []}', data)
-    if mode in ("calendar", "hidden"):
+    if mode in ("calendar", "hidden", "memory"):
         html = html.replace('/*__MODE__*/"list"', f'"{mode}"')
     components.html(html, height=height, scrolling=True)
 
@@ -315,6 +369,80 @@ def guess_board_name(url: str) -> str:
 @st.cache_data(show_spinner="게시판 이름 알아보는 중...", ttl=86400)
 def board_name(url):
     return guess_board_name(url)
+
+
+# ── 처음 접속할 때 뜨는 프로필 입력 창 ─────────
+GRADES = ["1학년", "2학년", "3학년", "4학년", "대학원"]
+INTEREST_OPTS = ["취업", "장학", "자격증", "대외활동", "연구"]
+PRESETS = {
+    "직접 입력": None,
+    "예시: 전자공학부 4학년 (취업·자격증)": ("전자공학부", "4학년", ["취업", "자격증"], "공기업(전력·에너지) 취업 희망, 2027년 2월 졸업예정"),
+    "예시: 경영학과 2학년 (장학)": ("경영학과", "2학년", ["장학"], ""),
+}
+
+
+def load_profile_from_url():
+    """새로고침해도 다시 묻지 않도록, 주소창(?major=...)에 저장해 둔 프로필을 읽어요."""
+    q = st.query_params
+    if "p_major" not in st.session_state and q.get("major"):
+        st.session_state["p_major"] = q.get("major", "")
+        st.session_state["p_grade"] = q.get("grade", "1학년") if q.get("grade") in GRADES else "1학년"
+        st.session_state["p_interests"] = [x for x in q.get("int", "").split(",") if x in INTEREST_OPTS]
+        st.session_state["p_extra"] = q.get("extra", "")
+
+
+def apply_preset():
+    v = PRESETS.get(st.session_state.get("f_preset"))
+    if v:
+        st.session_state.f_major, st.session_state.f_grade, st.session_state.f_interests, st.session_state.f_extra = v[0], v[1], list(v[2]), v[3]
+
+
+def profile_form():
+    st.caption("입력한 학과·학년·관심사에 맞춰 공지를 골라드려요. 나중에 사이드바에서 언제든 바꿀 수 있어요.")
+    st.session_state.setdefault("f_major", st.session_state.get("p_major", ""))
+    st.session_state.setdefault("f_grade", st.session_state.get("p_grade", "1학년"))
+    st.session_state.setdefault("f_interests", st.session_state.get("p_interests", []))
+    st.session_state.setdefault("f_extra", st.session_state.get("p_extra", ""))
+    st.selectbox("빠르게 채우기", list(PRESETS), key="f_preset", on_change=apply_preset)
+    st.text_input("학과 *", key="f_major", placeholder="예: 전자공학부, 경영학과")
+    st.selectbox("학년 *", GRADES, key="f_grade")
+    st.multiselect("관심사 * (여러 개 가능)", INTEREST_OPTS, key="f_interests")
+    st.text_area("추가 정보 (선택)", key="f_extra", height=80,
+                 placeholder="예: 공기업 취업 희망, 2027년 2월 졸업예정, 전기기사 준비 중")
+    if st.button("시작하기 →", type="primary", use_container_width=True):
+        m, it = st.session_state.f_major.strip(), st.session_state.f_interests
+        if not m or not it:
+            st.error("학과와 관심사(1개 이상)를 입력해 주세요.")
+            return
+        st.session_state.update(p_major=m, p_grade=st.session_state.f_grade, p_interests=list(it),
+                                p_extra=st.session_state.f_extra.strip(), profile_open=False)
+        st.query_params.update(major=m, grade=st.session_state.f_grade, int=",".join(it),
+                               extra=st.session_state.f_extra.strip()[:80])
+        st.rerun()
+
+
+if hasattr(st, "dialog"):
+    profile_dialog = st.dialog("👋 내 프로필을 알려주세요")(profile_form)
+else:  # 오래된 Streamlit이면 창 대신 화면에 바로 표시
+    def profile_dialog():
+        st.subheader("👋 내 프로필을 알려주세요")
+        profile_form()
+
+
+def open_profile():
+    for k in ("f_major", "f_grade", "f_interests", "f_extra", "f_preset"):
+        st.session_state.pop(k, None)
+    st.session_state["profile_open"] = True
+
+
+def server_key():
+    """컴퓨터(setx GEMINI_API_KEY) 또는 Streamlit Cloud의 Secrets에 저장한 키. 화면으로는 보내지 않아요."""
+    try:
+        if "GEMINI_API_KEY" in st.secrets:
+            return st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        pass
+    return os.getenv("GEMINI_API_KEY", "")
 
 
 KMU = ("https://ee.kookmin.ac.kr/community/board/notice/\n"
@@ -578,18 +706,18 @@ st.markdown("""<style>
 
 with st.sidebar:
     st.header("👤 내 프로필")
-    preset = st.selectbox("데모 프로필", ["전자공학부 4학년 (취업·자격증)", "경영학과 2학년 (장학)", "직접 입력"])
-    presets = {
-        "전자공학부 4학년 (취업·자격증)": ("전자공학부", "4학년", ["취업", "자격증"], "공기업(전력·에너지) 취업 희망, 2027년 2월 졸업예정"),
-        "경영학과 2학년 (장학)": ("경영학과", "2학년", ["장학"], ""),
-        "직접 입력": ("", "1학년", [], ""),
-    }
-    d_major, d_grade, d_int, d_extra = presets[preset]
-    grades = ["1학년", "2학년", "3학년", "4학년"]
-    major = st.text_input("학과", d_major)
-    grade = st.selectbox("학년", grades, index=grades.index(d_grade))
-    interests = st.multiselect("관심사", ["취업", "장학", "자격증", "대외활동", "연구"], default=d_int)
-    extra = st.text_area("추가 정보 (선택)", d_extra, height=70)
+    load_profile_from_url()
+    major = st.session_state.get("p_major", "")
+    grade = st.session_state.get("p_grade", "1학년")
+    interests = st.session_state.get("p_interests", [])
+    extra = st.session_state.get("p_extra", "")
+    if major:
+        st.markdown(f"**{major} {grade}**  \n관심사: {', '.join(interests) or '-'}"
+                    + (f"  \n<span style='font-size:13px;color:#6B7280'>{extra}</span>" if extra else ""),
+                    unsafe_allow_html=True)
+    else:
+        st.caption("아직 프로필을 입력하지 않았어요.")
+    st.button("✏️ 프로필 수정" if major else "프로필 입력하기", use_container_width=True, on_click=open_profile)
     today = st.date_input("기준 날짜", date.today())
 
     st.divider()
@@ -618,7 +746,7 @@ with st.sidebar:
                         found += probe_kmu_boards(u)
                     cands += found
                 st.session_state["board_suggest"] = recommend_boards(
-                    st.session_state.get("api_key", ""),
+                    st.session_state.get("api_key", "") or server_key(),
                     {"major": major, "grade": grade, "interests": interests, "extra": extra}, boards, cands)
                 st.session_state["board_all"] = prepare_candidates(boards, cands)
                 st.session_state["board_note"] = notes + [
@@ -648,10 +776,16 @@ with st.sidebar:
                     col2.button("➕", key="addall_" + c["url"], on_click=add_board, args=(c["url"],))
 
     st.divider()
-    st.session_state.setdefault("api_key", os.getenv("GEMINI_API_KEY", ""))
-    api_key = st.text_input("Gemini API 키", key="api_key", type="password")
+    typed_key = st.text_input("Gemini API 키", key="api_key", type="password",
+                              help="저장해 둔 키가 있으면 비워둬도 돼요. 입력한 키는 이 브라우저 창에서만 쓰여요.")
+    api_key = typed_key or server_key()
+    if not typed_key and api_key:
+        st.caption("🔒 저장된 키를 사용 중이에요 (화면에는 보이지 않아요)")
 
 profile = {"major": major, "grade": grade, "interests": interests, "extra": extra}
+if not major or st.session_state.get("profile_open"):
+    profile_dialog()
+    st.session_state["profile_open"] = False  # 창을 X로 닫아도 계속 뜨지 않게 (프로필이 없으면 다시 떠요)
 
 # 게시판 설정 (사이드바에서 읽은 링크)
 real_boards = bool(boards)
@@ -665,7 +799,7 @@ def ready():
         st.error("사이드바에 Gemini API 키를 넣어주세요.")
         return False
     if not major or not interests:
-        st.error("학과와 관심사를 입력해주세요.")
+        st.error("먼저 사이드바의 '프로필 입력하기'로 학과와 관심사를 입력해 주세요.")
         return False
     return True
 
@@ -688,21 +822,25 @@ with h_right:
 page = page or "홈"
 st.write("")
 
+# 이 사람의 결과를 찾는 열쇠 (프로필 + 게시판 또는 공지 내용)
+st.session_state.setdefault("notice_text", open("notices.txt", encoding="utf-8").read() if os.path.exists("notices.txt") else "")
+MY_KEY = batch_key(profile, boards if real_boards else {}, st.session_state["notice_text"])
+
 # ── 홈 ────────────────────────────────
 if page == "홈":
     if real_boards:
         source_note = f"실제 게시판 {len(boards)}곳에서 최신 공지를 모아 판단해요."
         notices = None
     else:
-        default_text = open("notices.txt", encoding="utf-8").read() if os.path.exists("notices.txt") else ""
         with st.expander("공지 내용 보기 / 직접 붙여넣기 (단톡방 공지도 여기에)"):
-            notice_text = st.text_area("공지는 --- 로 구분", default_text, height=220)
+            notice_text = st.text_area("공지는 --- 로 구분", key="notice_text", height=220)
         notices = parse_notices(notice_text)
         source_note = f"예시 공지 {len(notices)}개를 판단해요."
 
     c1, c2 = st.columns([1, 3], vertical_alignment="center")
-    run = c1.button("🤖 AI로 공지 판단하기", type="primary", use_container_width=True)
-    batch = load_batch()
+    batch = load_batch(MY_KEY)
+    run = c1.button("🔄 다시 판단하기" if batch else "🤖 AI로 공지 판단하기", type="primary", use_container_width=True,
+                    help="같은 프로필·게시판으로 이미 판단한 결과가 있으면 바로 보여줘요. 새 공지를 반영하려면 다시 판단하세요.")
     c2.caption(source_note + (f"  ·  마지막 판단: {batch['saved_at']}" if batch else "  ·  아직 판단한 결과가 없어요."))
 
     if run and ready():
@@ -713,14 +851,27 @@ if page == "홈":
                 st.write(f"🤖 공지 {len(notices)}개를 한 번에 판단하는 중...")
                 results = run_batch(api_key, profile, notices, today)
                 from datetime import datetime
-                batch = {"saved_at": datetime.now().strftime("%m/%d %H:%M"), "results": results}
-                json.dump(batch, open(BATCH_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+                batch = {"saved_at": datetime.now().strftime("%m/%d %H:%M"), "results": results,
+                         "profile": profile, "today": today.isoformat(),
+                         "source": f"실제 게시판 {len(boards)}곳" if real_boards else "예시 공지"}
+                save_batch(MY_KEY, batch)
                 status.update(label=f"완료! 공지 {len(results)}개를 판단했어요", state="complete", expanded=False)
             except Exception as e:
                 status.update(label="오류", state="error")
                 st.error(str(e))
 
     if batch and batch.get("results"):
+        with st.expander("📥 제출용 HTML 받기 (어느 컴퓨터에서나 더블클릭으로 열리는 파일)"):
+            if not batch.get("profile"):
+                batch = dict(batch, profile=profile, today=today.isoformat())
+            entries = export_entries(batch, today)
+            st.markdown("이 HTML 파일 하나에 **판단 결과가 담겨서**, 설치·인터넷·API 키 없이 열려요. "
+                        "홈·캘린더·기억·숨김 화면과 ☆·키워드·캘린더 받기가 모두 작동해요.")
+            st.markdown("**담길 프로필** (발표 중 위쪽에서 골라 바꿀 수 있어요)\n"
+                        + "\n".join(f"- {e['label']} · 공지 {len(e['results'])}개" for e in entries))
+            st.caption("다른 프로필도 넣고 싶으면 '✏️ 프로필 수정'으로 바꾼 뒤 'AI로 공지 판단하기'를 한 번 더 누르고 다시 받으세요.")
+            st.download_button("📥 공지비서_Agent.html 받기", standalone_html(entries), file_name="공지비서_Agent.html",
+                               mime="text/html", type="primary", use_container_width=True)
         show_dashboard(batch["results"], today, interests)
         st.caption("☆ 중요 표시, 관심 없음, 관심 키워드, 제외 키워드 설정은 이 브라우저에 저장돼요. 숨긴 공지는 위쪽 '숨김'에서 볼 수 있어요.")
     else:
@@ -728,7 +879,7 @@ if page == "홈":
 
 # ── 숨김 (필터로 숨긴 공지 모아보기) ───────────
 elif page == "숨김":
-    batch = load_batch()
+    batch = load_batch(MY_KEY)
     if batch and batch.get("results"):
         show_dashboard(batch["results"], today, interests, height=1000, mode="hidden")
     else:
@@ -736,7 +887,7 @@ elif page == "숨김":
 
 # ── 캘린더 (캘린더만 있는 화면) ───────────
 elif page == "캘린더":
-    batch = load_batch()
+    batch = load_batch(MY_KEY)
     if batch and batch.get("results"):
         show_dashboard(batch["results"], today, interests, height=1080, mode="calendar")
     else:
@@ -792,20 +943,7 @@ elif page == "Agent에게 맡기기":
             remember_note(fb)
             st.success("기억했어요! 다음 추천부터 반영돼요.")
 
-# ── 기억 ──────────────────────────────────────
+# ── 기억 (이 브라우저에 저장된 내 설정) ─────────
 else:
-    mem = load_memory()
-    st.caption("Agent가 기억하는 내 취향이에요. 추천할 때 이걸 참고해요.")
-    st.markdown("**👍 좋아한 공지**\n" + ("\n".join(f"- {x}" for x in mem["likes"]) or "- 없음"))
-    st.markdown("**👎 싫어한 공지**\n" + ("\n".join(f"- {x}" for x in mem["dislikes"]) or "- 없음"))
-    st.markdown("**💬 메모**\n" + ("\n".join(f"- {x}" for x in mem["notes"]) or "- 없음"))
-    st.markdown(f"**👀 이미 읽은 공지:** {len(mem['seen'])}개")
-    m1, m2 = st.columns(2)
-    if m1.button("👀 읽은 공지 초기화", help="아침 브리핑 시연 전에 누르면 모든 공지가 '새 공지'가 돼요"):
-        mem["seen"] = []
-        save_memory(mem)
-        st.rerun()
-    if m2.button("🗑️ 기억 전체 지우기"):
-        save_memory({"likes": [], "dislikes": [], "notes": [], "seen": []})
-        st.rerun()
-    st.caption("※ 홈의 ☆ 중요 표시·관심 없음·제외어는 브라우저에 따로 저장돼요.")
+    batch = load_batch(MY_KEY)
+    show_dashboard((batch or {}).get("results", []), today, interests, height=900, mode="memory")
