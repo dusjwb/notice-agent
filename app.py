@@ -1368,7 +1368,8 @@ if page == "홈":
     batch = load_batch(MY_KEY)
     run = c1.button("🔄 다시 판단하기" if batch else "🤖 AI로 공지 판단하기", type="primary", use_container_width=True,
                     help="같은 프로필·게시판으로 이미 판단한 결과가 있으면 바로 보여줘요. 새 공지를 반영하려면 다시 판단하세요.")
-    c2.caption("  ·  ".join(x for x in (source_note, f"마지막 판단: {batch['saved_at']}" if batch else "아직 판단한 결과가 없어요.") if x))
+    last_note = c2.empty()   # 판단이 끝나면 새 시간으로 바로 바꿔요
+    last_note.caption("  ·  ".join(x for x in (source_note, f"마지막 판단: {batch['saved_at']}" if batch else "아직 판단한 결과가 없어요.") if x))
 
     if run and ready():
         import time as _time
@@ -1428,6 +1429,7 @@ if page == "홈":
                          "profile": profile, "today": today.isoformat(),
                          "source": f"실제 게시판 {len(boards)}곳" if real_boards else "예시 공지"}
                 save_batch(MY_KEY, batch)
+                last_note.caption("  ·  ".join(x for x in (source_note, f"마지막 판단: {batch['saved_at']}") if x))
                 step(100, "완료!")
                 status.update(label=f"완료! 공지 {len(posts) if notices is None else len(notices)}개를 읽고 {sum(1 for r in results if r.get('relevant'))}개를 추천했어요 ({_time.time() - t0:.0f}초) · 나머지는 숨김 창에",
                               state="complete", expanded=False)
