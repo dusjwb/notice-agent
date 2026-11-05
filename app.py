@@ -18,6 +18,12 @@ from agent_tools import (TOOL_DECLARATIONS, Toolbox, collect_notices, d_day, d_d
                          load_sample_notices, make_ics, parse_notices, remember_feedback,
                          remember_note, save_memory)
 
+def now_kst():
+    """한국 시간 (Streamlit Cloud 서버는 해외라 그냥 쓰면 9시간 느려요)"""
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=9)))
+
+
 # 내 키로 쓸 수 있는 모델을 Google에 물어봐서 자동으로 골라요. 목록을 못 받을 때만 아래 이름을 써요.
 MODELS = ["gemini-3.8-flash-lite", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview"]
 MAX_STEPS = 15          # Agent가 도구를 쓰는 최대 횟수 (무한 반복 방지)
@@ -1242,7 +1248,7 @@ with st.sidebar:
     else:
         st.caption("아직 프로필을 입력하지 않았어요.")
     st.button("✏️ 프로필 수정" if major else "프로필 입력하기", use_container_width=True, on_click=open_profile)
-    today = st.date_input("기준 날짜", date.today())
+    today = st.date_input("기준 날짜", now_kst().date())
     typed_key = st.text_input("Gemini API 키", key="api_key", type="password",
                               help="저장해 둔 키가 있으면 비워둬도 돼요. 입력한 키는 이 브라우저 창에서만 쓰여요.")
     api_key = typed_key or server_key()
@@ -1418,7 +1424,7 @@ if page == "홈":
                 if not results:
                     raise RuntimeError("AI 답을 읽지 못했어요. 잠시 뒤 다시 눌러 주세요.")
                 from datetime import datetime
-                batch = {"saved_at": datetime.now().strftime("%m/%d %H:%M"), "results": results,
+                batch = {"saved_at": now_kst().strftime("%m/%d %H:%M"), "results": results,
                          "profile": profile, "today": today.isoformat(),
                          "source": f"실제 게시판 {len(boards)}곳" if real_boards else "예시 공지"}
                 save_batch(MY_KEY, batch)
