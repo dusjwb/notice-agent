@@ -1188,12 +1188,14 @@ def add_board(*urls):
     have = set(cur.split())
     new = [u for u in urls if u not in have]
     st.session_state["board_text"] = (cur + "\n" + "\n".join(new)).strip()
+    st.session_state["board_ok"] = st.session_state["board_text"]   # 추천에서 추가한 건 바로 적용
     for key in ("board_suggest", "board_all"):
         st.session_state[key] = [c for c in st.session_state.get(key, []) if c["url"] not in urls]
 
 
 def toggle_kmu():
     st.session_state["board_text"] = KMU if st.session_state.get("use_kmu") else ""
+    st.session_state["board_ok"] = st.session_state["board_text"]
     st.session_state.pop("board_suggest", None)
     st.session_state.pop("board_note", None)
     st.session_state.pop("board_all", None)
@@ -1258,11 +1260,23 @@ with st.sidebar:
     st.divider()
     st.header("🌐 게시판")
     st.session_state.setdefault("board_text", "")
+    st.session_state.setdefault("board_ok", st.session_state["board_text"])   # '확인'을 누른 링크만 써요
     st.toggle("국민대 전자공학부 게시판", key="use_kmu", on_change=toggle_kmu)
-    board_lines = st.text_area(
-        "게시판 링크", key="board_text",
-        placeholder="https://ee.kookmin.ac.kr/community/board/notice/\nhttps://...", height=130)
-    boards = parse_board_lines(board_lines)
+    st.text_area("게시판 링크", key="board_text",
+                 placeholder="https://ee.kookmin.ac.kr/community/board/notice/\nhttps://...", height=130)
+
+    def confirm_boards():
+        st.session_state["board_ok"] = st.session_state.get("board_text", "")
+        for k in ("board_suggest", "board_note", "board_all"):
+            st.session_state.pop(k, None)
+
+    st.button("확인", key="board_confirm", on_click=confirm_boards, use_container_width=True)
+    st.markdown("<style>.st-key-board_confirm button{background:#D93025;color:#fff;border:0;font-weight:700}"
+                ".st-key-board_confirm button:hover{background:#B3261E;color:#fff;border:0}"
+                ".st-key-board_confirm button p{color:#fff}</style>", unsafe_allow_html=True)
+    if st.session_state.get("board_text", "").strip() != st.session_state["board_ok"].strip():
+        st.caption("링크를 바꿨으면 **확인**을 눌러 주세요.")
+    boards = parse_board_lines(st.session_state["board_ok"])
     if boards:
         st.caption("인식한 게시판\n" + "\n".join(f"- ✅ **{n}**" for n in boards))
         if st.button("🔎 관련 게시판 추천받기", use_container_width=True,
